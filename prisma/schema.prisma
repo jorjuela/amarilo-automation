@@ -1,0 +1,126 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  name         String
+  macroProject String
+  city         String
+  type         String   // VIS, NO VIS, TOPE VIS, VIP, LUXURY
+  stage        String   @default("SOSTENIMIENTO")
+  status       String   @default("active")
+
+  briefFileName  String?
+  briefParsedAt  DateTime?
+  briefRawText   String?
+
+  emailSubject   String?
+  emailReceivedAt DateTime?
+  emailMessageId  String?
+
+  monthYear String? // e.g. "ABRIL2026"
+
+  googleSheetId  String?
+  googleSheetUrl String?
+
+  torres         Torre[]
+  trafficEntries TrafficEntry[]
+  jiraStructures JiraStructure[]
+
+  @@map("projects")
+}
+
+model Torre {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  name      String
+  areas     String   // JSON array of areas e.g. ["30m²","45m²","64m²"]
+  leadGoal  Int      @default(0)
+  budget    Float    @default(0)
+  audience  String?  // JSON string
+  motivo    String?  // Habitar or Inversión
+  ageRange  String?
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("torres")
+}
+
+model TrafficEntry {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  weekStart   DateTime
+  weekEnd     DateTime
+  weekLabel   String   // e.g. "JUN W1"
+  dayOfWeek   String   // Lunes, Martes, etc.
+
+  campaign    String
+  pm          String
+  requirement String
+  numTexts    Int     @default(0)
+  copyName    String?
+  numGraphics Int     @default(0)
+  graphicName String?
+  status      String  @default("pending")
+  jiraTicket  String?
+  notes       String?
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("traffic_entries")
+}
+
+model JiraStructure {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  epic      String
+  task      String
+  subtask   String
+  month     String
+  type      String   // Meta, PMAX, etc.
+  copied    Boolean  @default(false)
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("jira_structures")
+}
+
+model EmailLog {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+
+  messageId   String   @unique
+  subject     String
+  from        String
+  receivedAt  DateTime
+  processed   Boolean  @default(false)
+  projectId   String?
+  error       String?
+
+  @@map("email_logs")
+}
+
+model Settings {
+  id    String @id @default("singleton")
+  data  String // JSON blob for all settings
+
+  @@map("settings")
+}
+
+// Stage values: EXPECTATIVA | LANZAMIENTO | SOSTENIMIENTO

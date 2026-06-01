@@ -1,0 +1,43 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { prisma } from '@/lib/prisma'
+
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params
+    const project = await prisma.project.findUnique({
+      where: { id },
+      include: { torres: true, trafficEntries: true, jiraStructures: true },
+    })
+    if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    return NextResponse.json(project)
+  } catch (error) {
+    return NextResponse.json({ error: 'Failed to fetch project' }, { status: 500 })
+  }
+}
+
+export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params
+    const body = await req.json()
+    const { torres, ...projectData } = body
+
+    const updated = await prisma.project.update({
+      where: { id },
+      data: projectData,
+      include: { torres: true },
+    })
+    return NextResponse.json(updated)
+  } catch (error) {
+    return NextResponse.json({ error: 'Failed to update project' }, { status: 500 })
+  }
+}
+
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params
+    await prisma.project.delete({ where: { id } })
+    return NextResponse.json({ success: true })
+  } catch (error) {
+    return NextResponse.json({ error: 'Failed to delete project' }, { status: 500 })
+  }
+}
