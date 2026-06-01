@@ -2,7 +2,8 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dependencies
+# Copy schema first so postinstall (prisma generate) can find it
+COPY prisma ./prisma/
 COPY package*.json ./
 RUN npm ci
 
