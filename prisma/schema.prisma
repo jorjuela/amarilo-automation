@@ -124,3 +124,17 @@ model Settings {
 }
 
 // Stage values: EXPECTATIVA | LANZAMIENTO | SOSTENIMIENTO
+
+model User {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  email     String   @unique
+  password  String
+  name      String
+  role      String   @default("USER") // ADMIN | USER
+  active    Boolean  @default(true)
+
+  @@map("users")
+}
