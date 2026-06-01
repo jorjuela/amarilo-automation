@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:20-slim
 
 WORKDIR /app
 
@@ -7,15 +7,17 @@ COPY prisma ./prisma/
 COPY package*.json ./
 RUN npm ci
 
-# Copy all source including prisma/schema.prisma
 COPY . .
-
-# Generate Prisma client and build Next.js
-RUN npx prisma generate
 RUN npm run build
+
+# Copy schema to /app/schema/ — a path the Railway volume never mounts.
+# The volume is mounted at /app/prisma/ and would overwrite schema.prisma
+# there at runtime, so we keep a build-time copy outside that path.
+RUN mkdir -p /app/schema && cp /app/prisma/schema.prisma /app/schema/schema.prisma
 
 ENV NODE_ENV=production
 EXPOSE 3000
 
-# At startup: create/migrate tables then start Next.js
-CMD sh -c "npx prisma db push --schema=/app/prisma/schema.prisma --skip-generate && npx next start -p ${PORT:-3000}"
+# Railway overrides CMD with npm start, so the start script does the work.
+# DATABASE_URL points to /app/prisma/prod.db which lives inside the volume.
+CMD ["npm", "start"]
