@@ -1,5 +1,6 @@
 import LoginForm from '@/components/auth/LoginForm'
 import { getSession } from '@/lib/auth'
+import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 
 export const dynamic = 'force-dynamic'
@@ -7,6 +8,10 @@ export const dynamic = 'force-dynamic'
 export default async function LoginPage() {
   const session = await getSession()
   if (session) redirect('/dashboard')
+
+  // No users yet → first-run setup
+  const userCount = await prisma.user.count()
+  if (userCount === 0) redirect('/setup')
 
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--amarilo-navy)' }}>
