@@ -9,7 +9,8 @@ const PUBLIC_PATHS = [
   '/api/auth/setup',
   '/api/auth/me',
   '/api/auth/password',
-  '/api/health',        // Railway health check — always 200
+  '/api/health',
+  '/api/seed',
   '/api/cron',
   '/robots.txt',
 ]
