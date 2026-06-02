@@ -93,18 +93,21 @@ export default function Sidebar() {
       </nav>
 
       {/* User info + logout */}
-      <div className="px-3 py-4 border-t border-white/10 space-y-3">
+      <div className="px-3 py-4 border-t border-white/10 space-y-2">
         {user && (
-          <div className="flex items-center gap-2 px-3">
+          <Link
+            href="/dashboard/profile"
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/10 transition-colors ${pathname === '/dashboard/profile' ? 'bg-white/10' : ''}`}
+          >
             <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
               style={{ background: 'var(--amarilo-yellow)', color: 'var(--amarilo-navy)' }}>
               {user.name.charAt(0).toUpperCase()}
             </div>
             <div className="min-w-0">
               <p className="text-white text-xs font-medium truncate">{user.name}</p>
-              <p className="text-white/40 text-xs truncate">{user.role === 'ADMIN' ? 'Administrador' : 'Usuario'}</p>
+              <p className="text-white/40 text-xs truncate">{user.role === 'ADMIN' ? 'Administrador · Mi cuenta' : 'Usuario · Mi cuenta'}</p>
             </div>
-          </div>
+          </Link>
         )}
         <button
           onClick={handleLogout}

@@ -1,17 +1,26 @@
 export const dynamic = 'force-dynamic'
 import { prisma } from '@/lib/prisma'
-import { notFound } from 'next/navigation'
+import { getSession } from '@/lib/auth'
+import { notFound, redirect } from 'next/navigation'
 import { formatDate, formatCurrency } from '@/lib/utils'
 import type { Stage } from '@/types'
 import CreateSheetButton from '@/components/projects/CreateSheetButton'
 import GenerateJiraButton from '@/components/projects/GenerateJiraButton'
 
 export default async function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const session = await getSession()
+  if (!session) redirect('/login')
+
   const { id } = await params
-  const project = await prisma.project.findUnique({
-    where: { id },
-    include: { torres: true, jiraStructures: true },
-  })
+  let project
+  try {
+    project = await prisma.project.findUnique({
+      where: { id },
+      include: { torres: true, jiraStructures: true },
+    })
+  } catch {
+    notFound()
+  }
 
   if (!project) notFound()
 

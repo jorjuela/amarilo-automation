@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { TEAM_MEMBERS, DAYS_OF_WEEK } from '@/types'
 import type { TrafficEntry } from '@/types'
-import { getWeeksInMonth } from '@/lib/excel/traffic'
+import { getWeeksInMonth } from '@/lib/dates'
 import { format, addDays } from 'date-fns'
 
 interface Project {
