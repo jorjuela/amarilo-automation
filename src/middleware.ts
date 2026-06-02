@@ -1,36 +1,60 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSessionFromRequest } from '@/lib/auth'
 
-const PUBLIC_PATHS = ['/login', '/setup', '/api/auth/login', '/api/auth/setup', '/api/cron']
+const PUBLIC_PATHS = [
+  '/login',
+  '/setup',
+  '/api/auth/login',
+  '/api/auth/logout',
+  '/api/auth/setup',
+  '/api/auth/me',       // returns 401 json, not redirect
+  '/api/cron',
+  '/robots.txt',
+]
+
+const ADMIN_PAGE_PATHS = ['/dashboard/admin', '/dashboard/settings']
+const ADMIN_API_PATHS = ['/api/admin', '/api/settings']
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
+  const isApiRoute = pathname.startsWith('/api/')
 
-  // Allow public paths and static files
+  // Always allow static files, Next.js internals, and public paths
   if (
-    PUBLIC_PATHS.some((p) => pathname.startsWith(p)) ||
     pathname.startsWith('/_next') ||
     pathname.startsWith('/favicon') ||
-    pathname === '/robots.txt'
+    PUBLIC_PATHS.some((p) => pathname.startsWith(p))
   ) {
     return NextResponse.next()
   }
 
   const session = getSessionFromRequest(req)
 
-  // No session → redirect to login
+  // No session ─────────────────────────────────────────────────
   if (!session) {
-    const loginUrl = new URL('/login', req.url)
-    loginUrl.searchParams.set('from', pathname)
+    // API routes: return 401 JSON — never redirect
+    if (isApiRoute) {
+      return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
+    }
+    // Pages: redirect to login using req.nextUrl so the hostname is correct
+    const loginUrl = req.nextUrl.clone()
+    loginUrl.pathname = '/login'
+    loginUrl.search = `?from=${encodeURIComponent(pathname)}`
     return NextResponse.redirect(loginUrl)
   }
 
-  // Admin-only routes
-  const adminPaths = ['/dashboard/admin', '/dashboard/settings', '/api/admin', '/api/settings']
-  if (adminPaths.some(p => pathname.startsWith(p))) {
-    if (session.role !== 'ADMIN') {
-      return NextResponse.redirect(new URL('/dashboard', req.url))
-    }
+  // Has session ─────────────────────────────────────────────────
+  // Admin-only pages
+  if (ADMIN_PAGE_PATHS.some((p) => pathname.startsWith(p)) && session.role !== 'ADMIN') {
+    const url = req.nextUrl.clone()
+    url.pathname = '/dashboard'
+    url.search = ''
+    return NextResponse.redirect(url)
+  }
+
+  // Admin-only API routes
+  if (ADMIN_API_PATHS.some((p) => pathname.startsWith(p)) && session.role !== 'ADMIN') {
+    return NextResponse.json({ error: 'Sin permisos' }, { status: 403 })
   }
 
   return NextResponse.next()
