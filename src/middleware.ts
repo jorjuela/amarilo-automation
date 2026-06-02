@@ -7,7 +7,8 @@ const PUBLIC_PATHS = [
   '/api/auth/login',
   '/api/auth/logout',
   '/api/auth/setup',
-  '/api/auth/me',       // returns 401 json, not redirect
+  '/api/auth/me',
+  '/api/health',        // Railway health check — always 200
   '/api/cron',
   '/robots.txt',
 ]
