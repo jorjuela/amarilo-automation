@@ -2,16 +2,33 @@
 
 import Link from 'next/link'
 
-const TABS = [
-  { key: 'overview', label: '📋 Resumen' },
-  { key: 'traffic',  label: '📅 Tráfico' },
-  { key: 'jira',     label: '🎯 Jira' },
+const DEFAULT_TABS = [
+  { key: 'overview',  label: '📋 Resumen'  },
+  { key: 'traffic',   label: '📅 Tráfico'  },
+  { key: 'jira',      label: '🎯 Jira'     },
 ]
 
-export default function ProjectTabs({ projectId, activeTab }: { projectId: string; activeTab: string }) {
+interface ExtraTab { key: string; label: string }
+
+export default function ProjectTabs({
+  projectId,
+  activeTab,
+  extraTabs = [],
+}: {
+  projectId: string
+  activeTab: string
+  extraTabs?: ExtraTab[]
+}) {
+  // Insert extra tabs after overview
+  const tabs = [
+    DEFAULT_TABS[0],
+    ...extraTabs,
+    ...DEFAULT_TABS.slice(1),
+  ]
+
   return (
     <div className="flex gap-1 border-b border-gray-200">
-      {TABS.map((t) => (
+      {tabs.map((t) => (
         <Link
           key={t.key}
           href={`/dashboard/projects/${projectId}?tab=${t.key}`}

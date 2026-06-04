@@ -19,12 +19,13 @@ model Project {
   stage        String   @default("SOSTENIMIENTO")
   status       String   @default("active")
 
-  briefFileName  String?
-  briefParsedAt  DateTime?
-  briefRawText   String?
-  parseSource    String?   // AI | REGEX | SUBJECT
-  parseConfidence String?  // high | medium | low
-  needsReview    Boolean   @default(false)
+  briefFileName   String?
+  briefParsedAt   DateTime?
+  briefRawText    String?
+  briefData       String?   // JSON: channels, rtb, dos, donts, learnings, resources, salesRoom, competition, attachments[]
+  parseSource     String?   // AI | REGEX | SUBJECT
+  parseConfidence String?   // high | medium | low
+  needsReview     Boolean   @default(false)
 
   emailSubject   String?
   emailReceivedAt DateTime?

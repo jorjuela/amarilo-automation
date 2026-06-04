@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { fetchUnprocessedBriefEmails, markEmailAsRead } from '@/lib/email/monitor'
 import { extractProject } from '@/lib/ai/project-extractor'
+import type { TextSource } from '@/lib/ai/project-extractor'
 import { generateJiraStructuresForProject } from '@/lib/jira/generator'
 import type { Project, TorreData } from '@/types'
 
@@ -27,6 +28,17 @@ function toProjectDTO(p: PrismaProject): Project & { torres: TorreData[] } {
       motivo: t.motivo,
       ageRange: t.ageRange,
     })),
+  }
+}
+
+async function parsePdfText(buffer: Buffer): Promise<string> {
+  try {
+    const pdfParse = await import('pdf-parse')
+    const fn = (pdfParse as { default?: (b: Buffer) => Promise<{ text: string }> }).default || pdfParse
+    const data = await (fn as (b: Buffer) => Promise<{ text: string }>)(buffer)
+    return data.text || ''
+  } catch {
+    return ''
   }
 }
 
@@ -56,94 +68,83 @@ export async function GET(req: Request) {
 
     for (const email of emails) {
       try {
-        // Check if already fully processed
+        // Skip already processed
         const existing = await prisma.emailLog.findUnique({ where: { messageId: email.messageId } })
         if (existing?.processed) { skipped++; continue }
 
-        // Log the email (upsert clears previous error so we can retry)
+        // Log email (clears previous error for retry)
         await prisma.emailLog.upsert({
           where: { messageId: email.messageId },
-          create: {
-            messageId: email.messageId,
-            subject: email.subject,
-            from: email.from,
-            receivedAt: email.receivedAt,
-          },
-          update: { error: null }, // clear previous error on retry
+          create: { messageId: email.messageId, subject: email.subject, from: email.from, receivedAt: email.receivedAt },
+          update: { error: null },
         })
 
-        // Check duplicate by emailMessageId OR by name+city (same project sent again)
-        const duplicate = await prisma.project.findFirst({
-          where: {
-            OR: [
-              { emailMessageId: email.messageId },
-              // We'll check name+city after extraction
-            ],
-          },
-        })
+        // Fast duplicate check by messageId
+        const duplicate = await prisma.project.findFirst({ where: { emailMessageId: email.messageId } })
         if (duplicate) {
-          await prisma.emailLog.update({
-            where: { messageId: email.messageId },
-            data: { processed: true, projectId: duplicate.id },
-          })
+          await prisma.emailLog.update({ where: { messageId: email.messageId }, data: { processed: true, projectId: duplicate.id } })
           skipped++
           continue
         }
 
-        // Build raw text: prefer PDF, fall back to body
-        let rawText = ''
-        if (email.pdfBuffer) {
-          try {
-            const pdfParse = await import('pdf-parse')
-            const fn = (pdfParse as { default?: (b: Buffer) => Promise<{ text: string }> }).default || pdfParse
-            const data = await (fn as (b: Buffer) => Promise<{ text: string }>)(email.pdfBuffer)
-            rawText = data.text
-          } catch (pdfErr) {
-            console.error('PDF parse error:', pdfErr)
+        // ── Build text sources from ALL attachments + body ──────────────────
+        const sources: TextSource[] = []
+
+        // Parse each PDF attachment
+        for (const att of email.pdfAttachments ?? []) {
+          const text = await parsePdfText(att.buffer)
+          if (text.trim().length > 30) {
+            sources.push({ filename: att.filename, text })
           }
         }
-        if (rawText.trim().length < 100 && email.bodyText && email.bodyText.trim().length > 50) {
-          rawText = email.bodyText
+
+        // Email body as additional source
+        const bodyText = email.bodyText?.trim() ?? ''
+        if (bodyText.length > 50) {
+          sources.push({ filename: 'email-body.txt', text: bodyText, isBody: true })
         }
 
-        // Extract project info using AI → Regex → Subject fallback chain
-        const extracted = await extractProject(
-          rawText,
-          email.attachmentName || '',
-          email.subject,
-          email.from,
-        )
-
-        // Check duplicate by name+city now that we have it
-        if (extracted.projectName && extracted.city) {
-          const nameDuplicate = await prisma.project.findFirst({
-            where: {
-              name: extracted.projectName,
-              city: extracted.city,
-            },
+        if (sources.length === 0) {
+          await prisma.emailLog.update({
+            where: { messageId: email.messageId },
+            data: { error: 'No parseable content found (no PDFs and no body text)' },
           })
-          if (nameDuplicate) {
-            // Update existing project with newer email info if needed
-            await prisma.project.update({
-              where: { id: nameDuplicate.id },
-              data: {
-                emailMessageId: email.messageId,
-                emailReceivedAt: email.receivedAt,
-                ...(rawText && rawText.length > (nameDuplicate.briefRawText?.length ?? 0)
-                  ? { briefRawText: rawText, briefParsedAt: new Date() }
-                  : {}),
-              },
-            })
-            await prisma.emailLog.update({
-              where: { messageId: email.messageId },
-              data: { processed: true, projectId: nameDuplicate.id },
-            })
+          continue
+        }
+
+        // ── Extract project + campaign data ─────────────────────────────────
+        const extracted = await extractProject(sources, email.subject, email.from)
+
+        // Combined raw text for search/AI later
+        const combinedRaw = sources.map((s) => `=== ${s.filename} ===\n${s.text}`).join('\n\n')
+
+        // Duplicate check by name + city
+        if (extracted.projectName && extracted.city) {
+          const nameDup = await prisma.project.findFirst({
+            where: { name: extracted.projectName, city: extracted.city },
+          })
+          if (nameDup) {
+            // Update with fresher data if this brief has more text
+            const shouldUpdate = combinedRaw.length > (nameDup.briefRawText?.length ?? 0)
+            if (shouldUpdate) {
+              await prisma.project.update({
+                where: { id: nameDup.id },
+                data: {
+                  briefRawText: combinedRaw,
+                  briefData: JSON.stringify(extracted.campaign),
+                  briefParsedAt: new Date(),
+                  emailMessageId: email.messageId,
+                  emailReceivedAt: email.receivedAt,
+                },
+              })
+            }
+            await prisma.emailLog.update({ where: { messageId: email.messageId }, data: { processed: true, projectId: nameDup.id } })
             skipped++
             continue
           }
         }
 
-        // Create project with all extracted info
+        // ── Create project ───────────────────────────────────────────────────
         const project = await prisma.project.create({
           data: {
             name: extracted.projectName,
@@ -153,9 +154,10 @@ export async function GET(req: Request) {
             stage: extracted.stage,
             status: extracted.confidence === 'low' ? 'needs_review' : 'active',
             monthYear: extracted.monthYear,
-            briefFileName: email.attachmentName || '',
+            briefFileName: email.pdfAttachments?.[0]?.filename ?? email.attachmentName ?? '',
             briefParsedAt: new Date(),
-            briefRawText: rawText,
+            briefRawText: combinedRaw,
+            briefData: JSON.stringify(extracted.campaign),
             parseSource: extracted.parseSource,
             parseConfidence: extracted.confidence,
             needsReview: extracted.confidence === 'low',
@@ -177,75 +179,44 @@ export async function GET(req: Request) {
           include: { torres: true },
         })
 
-        // Generate Jira structures
-        const jiraStructures = generateJiraStructuresForProject(toProjectDTO(project))
-        if (jiraStructures.length > 0) {
+        // Jira structures
+        const jira = generateJiraStructuresForProject(toProjectDTO(project))
+        if (jira.length > 0) {
           await prisma.jiraStructure.createMany({
-            data: jiraStructures.map((j) => ({
-              epic: j.epic,
-              task: j.task,
-              subtask: j.subtask,
-              month: j.month,
-              type: j.type,
-              projectId: project.id,
-            })),
+            data: jira.map((j) => ({ epic: j.epic, task: j.task, subtask: j.subtask, month: j.month, type: j.type, projectId: project.id })),
           })
         }
 
-        // Create Google Sheet if configured
+        // Google Sheet
         if (config.googleDrive?.clientEmail && config.googleDrive?.privateKey) {
           try {
             const { createAmiloClientSheet } = await import('@/lib/sheets/google-sheets')
-            const sheet = await createAmiloClientSheet(
-              config.googleDrive,
-              config.googleDrive.folderId || '',
-              toProjectDTO(project)
-            )
-            await prisma.project.update({
-              where: { id: project.id },
-              data: { googleSheetId: sheet.spreadsheetId, googleSheetUrl: sheet.url },
-            })
+            const sheet = await createAmiloClientSheet(config.googleDrive, config.googleDrive.folderId || '', toProjectDTO(project))
+            await prisma.project.update({ where: { id: project.id }, data: { googleSheetId: sheet.spreadsheetId, googleSheetUrl: sheet.url } })
           } catch (sheetErr) {
-            console.error('Error creating Google Sheet:', sheetErr)
-            // Non-fatal — project was still created
+            console.error('Sheet creation error:', sheetErr)
           }
         }
 
-        // Mark email as processed
-        await prisma.emailLog.update({
-          where: { messageId: email.messageId },
-          data: { processed: true, projectId: project.id },
-        })
-
+        await prisma.emailLog.update({ where: { messageId: email.messageId }, data: { processed: true, projectId: project.id } })
         await markEmailAsRead(gmailCreds, email.messageId)
         processed++
 
-        console.log(`✓ Created project "${project.name}" (${project.city}) from email "${email.subject}" [${extracted.parseSource}, confidence=${extracted.confidence}]`)
+        console.log(`✓ "${project.name}" (${project.city}) [${extracted.parseSource}/${extracted.confidence}] — ${sources.length} fuente(s), ${extracted.campaign.channels.length} canales`)
 
       } catch (emailErr) {
-        const errMsg = String(emailErr)
-        console.error(`Error processing email ${email.messageId}:`, emailErr)
-        errors.push(`${email.subject}: ${errMsg.slice(0, 200)}`)
-        await prisma.emailLog.update({
-          where: { messageId: email.messageId },
-          data: { error: errMsg.slice(0, 500) },
-        }).catch(() => {})
+        const msg = String(emailErr).slice(0, 500)
+        console.error(`Error processing ${email.messageId}:`, emailErr)
+        errors.push(`${email.subject}: ${msg}`)
+        await prisma.emailLog.update({ where: { messageId: email.messageId }, data: { error: msg } }).catch(() => {})
       }
     }
 
-    return NextResponse.json({
-      message: 'OK',
-      processed,
-      skipped,
-      errors: errors.length > 0 ? errors : undefined,
-      total: emails.length,
-    })
+    return NextResponse.json({ message: 'OK', processed, skipped, total: emails.length, ...(errors.length ? { errors } : {}) })
   } catch (error) {
-    console.error('Cron email error:', error)
-    const errMsg = String(error)
-    if (errMsg.includes('invalid_grant')) {
-      return NextResponse.json({ error: errMsg, needsReauth: true }, { status: 401 })
-    }
-    return NextResponse.json({ error: errMsg }, { status: 500 })
+    const msg = String(error)
+    console.error('Cron error:', error)
+    if (msg.includes('invalid_grant')) return NextResponse.json({ error: msg, needsReauth: true }, { status: 401 })
+    return NextResponse.json({ error: msg }, { status: 500 })
   }
 }

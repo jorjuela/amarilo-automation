@@ -10,15 +10,23 @@ const SUBJECT_PATTERNS = [
   /AMARILO.*BRIEF/i,
 ]
 
+export interface PdfAttachment {
+  filename: string
+  buffer: Buffer
+}
+
 export interface EmailBrief {
   messageId: string
   subject: string
   from: string
   receivedAt: Date
+  /** @deprecated use pdfAttachments */
   attachmentName?: string
+  /** @deprecated use pdfAttachments */
   pdfBuffer?: Buffer
-  bodyText?: string   // plain-text body
-  bodyHtml?: string   // HTML body
+  pdfAttachments: PdfAttachment[]  // ALL pdf attachments
+  bodyText?: string
+  bodyHtml?: string
   parsedBrief?: ParsedBrief
 }
 
@@ -38,11 +46,21 @@ export function createGmailClient(credentials: {
   return google.gmail({ version: 'v1', auth: oauth2Client })
 }
 
-// Recursively walk MIME parts to find attachments and body text
-function walkParts(
-  parts: { mimeType?: string | null; filename?: string | null; body?: { attachmentId?: string | null; data?: string | null } | null; parts?: unknown[] | null }[],
-  result: { pdf: { filename: string; attachmentId: string } | null; textPlain: string; textHtml: string }
-) {
+type MimePart = {
+  mimeType?: string | null
+  filename?: string | null
+  body?: { attachmentId?: string | null; data?: string | null } | null
+  parts?: unknown[] | null
+}
+
+type WalkResult = {
+  pdfs: { filename: string; attachmentId: string }[]
+  textPlain: string
+  textHtml: string
+}
+
+// Recursively walk MIME parts — collects ALL pdf attachments (not just first)
+function walkParts(parts: MimePart[], result: WalkResult) {
   for (const part of parts) {
     const mime = part.mimeType || ''
     const filename = part.filename || ''
@@ -50,15 +68,13 @@ function walkParts(
     const attachmentId = part.body?.attachmentId || ''
 
     if (mime === 'text/plain' && !filename && data) {
-      const decoded = Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8')
-      result.textPlain += decoded
+      result.textPlain += Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8')
     } else if (mime === 'text/html' && !filename && data) {
-      const decoded = Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8')
-      result.textHtml += decoded
-    } else if ((mime === 'application/pdf' || filename.toLowerCase().endsWith('.pdf')) && attachmentId && !result.pdf) {
-      result.pdf = { filename, attachmentId }
+      result.textHtml += Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8')
+    } else if ((mime === 'application/pdf' || filename.toLowerCase().endsWith('.pdf')) && attachmentId) {
+      result.pdfs.push({ filename, attachmentId })
     } else if (mime.startsWith('multipart/') && Array.isArray(part.parts)) {
-      walkParts(part.parts as typeof parts, result)
+      walkParts(part.parts as MimePart[], result)
     }
   }
 }
@@ -115,30 +131,27 @@ export async function fetchUnprocessedBriefEmails(credentials: {
       allParts.push({ mimeType: payloadMime, body: { data: payloadData }, filename: '' })
     }
 
-    const found = { pdf: null as { filename: string; attachmentId: string } | null, textPlain: '', textHtml: '' }
+    const found: WalkResult = { pdfs: [], textPlain: '', textHtml: '' }
     walkParts(allParts, found)
 
-    // Download PDF if found
-    let pdfBuffer: Buffer | undefined
-    let attachmentName = ''
-    if (found.pdf) {
-      attachmentName = found.pdf.filename
+    // Download ALL PDF attachments
+    const pdfAttachments: PdfAttachment[] = []
+    for (const pdf of found.pdfs) {
       try {
         const attachRes = await gmail.users.messages.attachments.get({
           userId: 'me',
           messageId: msg.id,
-          id: found.pdf.attachmentId,
+          id: pdf.attachmentId,
         })
         if (attachRes.data.data) {
           const base64 = attachRes.data.data.replace(/-/g, '+').replace(/_/g, '/')
-          pdfBuffer = Buffer.from(base64, 'base64')
+          pdfAttachments.push({ filename: pdf.filename, buffer: Buffer.from(base64, 'base64') })
         }
       } catch (err) {
-        console.error(`Error downloading attachment for ${msg.id}:`, err)
+        console.error(`Error downloading ${pdf.filename} for ${msg.id}:`, err)
       }
     }
 
-    // Strip HTML tags for body text fallback
     const bodyText = found.textPlain || stripHtml(found.textHtml)
 
     results.push({
@@ -146,8 +159,9 @@ export async function fetchUnprocessedBriefEmails(credentials: {
       subject,
       from,
       receivedAt,
-      attachmentName,
-      pdfBuffer,
+      attachmentName: pdfAttachments[0]?.filename,
+      pdfBuffer: pdfAttachments[0]?.buffer,
+      pdfAttachments,
       bodyText,
       bodyHtml: found.textHtml,
     })

@@ -1,6 +1,32 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
-import type { ParsedBrief, ProjectType, Stage, TorreData } from '@/types'
+import type { ProjectType, Stage, TorreData } from '@/types'
 import { parseBriefText } from '@/lib/brief/parser'
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface CampaignDetail {
+  channels: string[]            // Meta, PMAX, Google Ads, TikTok, DOOH…
+  objectives: string[]          // campaign objectives
+  rtb: string[]                 // reasons to believe
+  targetAudience: string        // audience description
+  competition: string           // competitor notes
+  tone: string                  // brand tone / voice
+  dos: string[]
+  donts: string[]
+  learnings: string[]           // past learnings
+  resources: string             // available resources
+  salesRoomAddress: string
+  investmentPhases: string[]    // investment phases / timeline
+  kpis: string[]                // desired KPIs
+  attachmentSummaries: AttachmentSummary[]
+}
+
+export interface AttachmentSummary {
+  filename: string
+  type: 'brief' | 'creative' | 'media_plan' | 'presentation' | 'other'
+  summary: string               // 2-3 sentence summary
+  keyData: string[]             // bullet points of key data
+}
 
 export interface ExtractedProject {
   projectName: string
@@ -10,115 +36,117 @@ export interface ExtractedProject {
   stage: Stage
   monthYear: string
   torres: TorreData[]
-  channels: string[]
-  rtb: string[]
-  dos: string[]
-  donts: string[]
-  learnings: string[]
-  resources: string
-  salesRoomAddress: string
+  campaign: CampaignDetail
   parseSource: 'AI' | 'REGEX' | 'SUBJECT'
   confidence: 'high' | 'medium' | 'low'
   missingFields: string[]
 }
 
-const EXTRACT_PROMPT = `Eres un experto en proyectos inmobiliarios de Amarilo Colombia.
-Analiza el siguiente contenido de un email o brief de marketing y extrae TODOS los campos del proyecto.
+// ─── Prompts ──────────────────────────────────────────────────────────────────
 
-Responde ÚNICAMENTE con un JSON válido con esta estructura exacta (sin texto adicional):
+const PROJECT_PROMPT = `Eres experto en proyectos inmobiliarios de Amarilo Colombia.
+Extrae TODOS los campos del proyecto del siguiente contenido.
+Responde SOLO con JSON válido, sin texto adicional:
 {
-  "projectName": "nombre del proyecto/sala de ventas (ej: JARDINES DEL RIO, CORAL II, SANTORINI)",
-  "macroProject": "nombre del macroproyecto o del conjunto (puede ser igual a projectName)",
-  "city": "ciudad donde está el proyecto (Bogotá, Medellín, Cartagena, etc.)",
+  "projectName": "nombre del proyecto / sala de ventas",
+  "macroProject": "nombre del macroproyecto o conjunto",
+  "city": "ciudad (Bogotá, Medellín, Cartagena, Cali, etc.)",
   "type": "VIS | NO VIS | TOPE VIS | VIP | VIS DE RENOVACION URBANA | LUXURY",
   "stage": "EXPECTATIVA | LANZAMIENTO | SOSTENIMIENTO",
-  "monthYear": "mes y año del brief como MESAÑO ej: ABRIL2026, JUNIO2026",
-  "torres": [
-    {
-      "name": "nombre de la torre o etapa",
-      "areas": ["áreas disponibles como 30m², 45m²"],
-      "leadGoal": 150,
-      "budget": 50000000,
-      "motivo": "Habitar | Inversión | ambos",
-      "ageRange": "rango de edad del público objetivo ej: 28-45 años"
-    }
-  ],
-  "channels": ["Meta", "PMAX", "Google Ads", "TikTok", "Programmatic", "DOOH", "Radio"],
-  "rtb": ["razón para creer 1", "razón para creer 2"],
-  "dos": ["do 1", "do 2"],
-  "donts": ["dont 1", "dont 2"],
-  "learnings": ["aprendizaje 1"],
-  "resources": "descripción de recursos disponibles",
-  "salesRoomAddress": "dirección de la sala de ventas si se menciona",
+  "monthYear": "MESAÑO mayúsculas ej ABRIL2026",
+  "torres": [{"name":"","areas":[],"leadGoal":0,"budget":0,"motivo":"","ageRange":""}],
   "confidence": "high | medium | low"
 }
-
 Reglas:
-- Si el campo no está en el texto, usa "" para strings, [] para arrays, 0 para números
-- Para type: VIS si precio < 235 SMMLV, NO VIS si no está subsidiado, LUXURY si es premium
-- Para stage: EXPECTATIVA si es pre-lanzamiento/expectativa, LANZAMIENTO si acaba de lanzar, SOSTENIMIENTO si ya está en venta
-- Si hay múltiples torres/etapas, créalas todas en el array torres
-- Si no hay torres definidas, crea una con el mismo nombre del proyecto
-- monthYear: formato MEESAÑO en mayúsculas (ENERO2026, FEBRERO2026, etc.)
-- confidence: high si extraíste nombre+ciudad+tipo+etapa, medium si falta alguno, low si casi todo está vacío`
+- type VIS si subsidiado <235 SMMLV; NO VIS si no subsidiado; LUXURY si premium
+- stage EXPECTATIVA=pre-lanzamiento; LANZAMIENTO=recién lanzado; SOSTENIMIENTO=en venta
+- Si no hay torres, crea una con el nombre del proyecto
+- confidence high=nombre+ciudad+tipo+etapa extraídos; medium=falta 1; low=falta 2+`
 
-export async function extractProjectWithAI(
-  rawText: string,
-  emailSubject: string,
-  emailFrom: string
-): Promise<ExtractedProject | null> {
+const CAMPAIGN_PROMPT = `Eres experto en marketing digital inmobiliario colombiano.
+Analiza el contenido y extrae el detalle completo de la campaña.
+Responde SOLO con JSON válido:
+{
+  "channels": ["Meta","PMAX","Google Ads","TikTok","Programmatic","DOOH","Radio","OOH","Email","WhatsApp","SMS"],
+  "objectives": ["objetivo 1","objetivo 2"],
+  "rtb": ["razón para creer 1","razón para creer 2"],
+  "targetAudience": "descripción detallada del público objetivo",
+  "competition": "información sobre competencia si se menciona",
+  "tone": "tono de comunicación / voz de marca",
+  "dos": ["sí hacer 1","sí hacer 2"],
+  "donts": ["no hacer 1","no hacer 2"],
+  "learnings": ["aprendizaje 1","aprendizaje 2"],
+  "resources": "descripción de recursos disponibles (videos, fotos, renders)",
+  "salesRoomAddress": "dirección de sala de ventas",
+  "investmentPhases": ["fase 1: descripción y fechas","fase 2: descripción y fechas"],
+  "kpis": ["KPI 1: meta","KPI 2: meta"]
+}
+Incluye SOLO lo que realmente está en el texto. Arrays vacíos si no aparece el dato.`
+
+const ATTACHMENT_PROMPT = `Analiza este documento adjunto de marketing inmobiliario.
+Responde SOLO con JSON válido:
+{
+  "type": "brief | creative | media_plan | presentation | other",
+  "summary": "resumen del documento en 2-3 oraciones",
+  "keyData": ["dato clave 1","dato clave 2","dato clave 3","dato clave 4","dato clave 5"]
+}`
+
+// ─── AI helpers ───────────────────────────────────────────────────────────────
+
+function getModel() {
   const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey || rawText.trim().length < 50) return null
+  if (!apiKey) throw new Error('GEMINI_API_KEY not set')
+  return new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: 'gemini-1.5-flash' })
+}
+
+function parseJson<T>(text: string): T {
+  const m = text.match(/```(?:json)?\s*([\s\S]*?)```/) || text.match(/(\{[\s\S]*\})/)
+  return JSON.parse(m ? m[1] : text) as T
+}
+
+async function callGemini(prompt: string, content: string): Promise<string> {
+  const model = getModel()
+  const result = await model.generateContent(`${prompt}\n\nCONTENIDO:\n${content.slice(0, 14000)}`)
+  return result.response.text().trim()
+}
+
+// ─── Extract project metadata ─────────────────────────────────────────────────
+
+async function extractProjectMeta(
+  combinedText: string,
+  emailSubject: string,
+  emailFrom: string,
+): Promise<Omit<ExtractedProject, 'campaign'> | null> {
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey || combinedText.trim().length < 50) return null
 
   try {
-    const genAI = new GoogleGenerativeAI(apiKey)
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
+    const content = `Asunto: ${emailSubject}\nDe: ${emailFrom}\n\n${combinedText}`
+    const raw = await callGemini(PROJECT_PROMPT, content)
+    const parsed = parseJson<Record<string, unknown>>(raw)
 
-    const prompt = `${EXTRACT_PROMPT}
+    const validTypes: ProjectType[] = ['VIS', 'NO VIS', 'TOPE VIS', 'VIP', 'VIS DE RENOVACION URBANA', 'LUXURY']
+    const validStages: Stage[] = ['EXPECTATIVA', 'LANZAMIENTO', 'SOSTENIMIENTO']
 
-Asunto del email: ${emailSubject}
-De: ${emailFrom}
+    const type = validTypes.includes(parsed.type as ProjectType) ? parsed.type as ProjectType : 'NO VIS'
+    const stage = validStages.includes(parsed.stage as Stage) ? parsed.stage as Stage : 'SOSTENIMIENTO'
 
-CONTENIDO:
-${rawText.slice(0, 14000)}`
-
-    const result = await model.generateContent(prompt)
-    const text = result.response.text().trim()
-
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) || text.match(/(\{[\s\S]*\})/)
-    const jsonStr = jsonMatch ? jsonMatch[1] : text
-    const parsed = JSON.parse(jsonStr)
-
-    const torres: TorreData[] = (parsed.torres || []).map((t: Partial<TorreData>) => ({
-      name: String(t.name || parsed.projectName || 'Torre Principal'),
+    const torres: TorreData[] = ((parsed.torres as Partial<TorreData>[]) || []).map((t) => ({
+      name: String(t.name || parsed.projectName || 'Principal'),
       areas: Array.isArray(t.areas) ? t.areas.map(String) : [],
       leadGoal: Number(t.leadGoal) || 0,
       budget: Number(t.budget) || 0,
       motivo: t.motivo ? String(t.motivo) : undefined,
       ageRange: t.ageRange ? String(t.ageRange) : undefined,
     }))
-
-    // Ensure at least one torre
-    if (torres.length === 0) {
-      torres.push({
-        name: parsed.projectName || 'Principal',
-        areas: [],
-        leadGoal: 0,
-        budget: 0,
-      })
-    }
-
-    const validTypes: ProjectType[] = ['VIS', 'NO VIS', 'TOPE VIS', 'VIP', 'VIS DE RENOVACION URBANA', 'LUXURY']
-    const validStages: Stage[] = ['EXPECTATIVA', 'LANZAMIENTO', 'SOSTENIMIENTO']
-
-    const type = validTypes.includes(parsed.type) ? parsed.type as ProjectType : 'NO VIS'
-    const stage = validStages.includes(parsed.stage) ? parsed.stage as Stage : 'SOSTENIMIENTO'
+    if (torres.length === 0) torres.push({ name: String(parsed.projectName || 'Principal'), areas: [], leadGoal: 0, budget: 0 })
 
     const missingFields: string[] = []
     if (!parsed.projectName) missingFields.push('projectName')
     if (!parsed.city) missingFields.push('city')
     if (!parsed.monthYear) missingFields.push('monthYear')
 
+    const conf = parsed.confidence as string
     return {
       projectName: String(parsed.projectName || '').trim(),
       macroProject: String(parsed.macroProject || parsed.projectName || '').trim(),
@@ -127,120 +155,182 @@ ${rawText.slice(0, 14000)}`
       stage,
       monthYear: String(parsed.monthYear || '').trim(),
       torres,
-      channels: Array.isArray(parsed.channels) ? parsed.channels.map(String) : [],
-      rtb: Array.isArray(parsed.rtb) ? parsed.rtb.map(String) : [],
-      dos: Array.isArray(parsed.dos) ? parsed.dos.map(String) : [],
-      donts: Array.isArray(parsed.donts) ? parsed.donts.map(String) : [],
-      learnings: Array.isArray(parsed.learnings) ? parsed.learnings.map(String) : [],
-      resources: String(parsed.resources || '').trim(),
-      salesRoomAddress: String(parsed.salesRoomAddress || '').trim(),
       parseSource: 'AI',
-      confidence: ['high', 'medium', 'low'].includes(parsed.confidence) ? parsed.confidence : 'medium',
+      confidence: ['high', 'medium', 'low'].includes(conf) ? conf as 'high' | 'medium' | 'low' : 'medium',
       missingFields,
     }
   } catch (err) {
-    console.error('AI project extraction failed:', err)
+    console.error('AI project meta extraction failed:', err)
     return null
   }
 }
 
-function parsedBriefToExtracted(brief: ParsedBrief): ExtractedProject {
-  const missingFields: string[] = []
-  if (!brief.projectName) missingFields.push('projectName')
-  if (!brief.city) missingFields.push('city')
-  if (!brief.monthYear) missingFields.push('monthYear')
+// ─── Extract campaign detail ──────────────────────────────────────────────────
 
-  return {
-    projectName: brief.projectName,
-    macroProject: brief.macroProject,
-    city: brief.city,
-    type: brief.type,
-    stage: brief.stage,
-    monthYear: brief.monthYear,
-    torres: brief.torres,
-    channels: brief.channels,
-    rtb: brief.rtb,
-    dos: brief.dos,
-    donts: brief.donts,
-    learnings: brief.learnings,
-    resources: brief.resources,
-    salesRoomAddress: brief.salesRoomAddress || '',
-    parseSource: 'REGEX',
-    confidence: missingFields.length === 0 ? 'high' : missingFields.length === 1 ? 'medium' : 'low',
-    missingFields,
+async function extractCampaignDetail(combinedText: string): Promise<CampaignDetail> {
+  const empty: CampaignDetail = {
+    channels: [], objectives: [], rtb: [], targetAudience: '', competition: '',
+    tone: '', dos: [], donts: [], learnings: [], resources: '', salesRoomAddress: '',
+    investmentPhases: [], kpis: [], attachmentSummaries: [],
+  }
+  if (!process.env.GEMINI_API_KEY || combinedText.trim().length < 50) return empty
+
+  try {
+    const raw = await callGemini(CAMPAIGN_PROMPT, combinedText)
+    const parsed = parseJson<Record<string, unknown>>(raw)
+    const arr = (k: string) => Array.isArray(parsed[k]) ? (parsed[k] as unknown[]).map(String) : []
+    const str = (k: string) => String(parsed[k] || '').trim()
+
+    return {
+      channels: arr('channels'),
+      objectives: arr('objectives'),
+      rtb: arr('rtb'),
+      targetAudience: str('targetAudience'),
+      competition: str('competition'),
+      tone: str('tone'),
+      dos: arr('dos'),
+      donts: arr('donts'),
+      learnings: arr('learnings'),
+      resources: str('resources'),
+      salesRoomAddress: str('salesRoomAddress'),
+      investmentPhases: arr('investmentPhases'),
+      kpis: arr('kpis'),
+      attachmentSummaries: [],
+    }
+  } catch (err) {
+    console.error('Campaign detail extraction failed:', err)
+    return empty
   }
 }
 
-// Extract project name and city from email subject "AMARILO | PROJECT | CITY"
-function extractFromSubject(subject: string): { name: string; city: string; monthYear: string } {
+// ─── Summarize each attachment ────────────────────────────────────────────────
+
+async function summarizeAttachment(filename: string, text: string): Promise<AttachmentSummary> {
+  const fallback: AttachmentSummary = { filename, type: 'other', summary: '', keyData: [] }
+  if (!process.env.GEMINI_API_KEY || text.trim().length < 50) return fallback
+
+  try {
+    const raw = await callGemini(ATTACHMENT_PROMPT, `Archivo: ${filename}\n\n${text}`)
+    const parsed = parseJson<Record<string, unknown>>(raw)
+    return {
+      filename,
+      type: (['brief','creative','media_plan','presentation','other'].includes(parsed.type as string)
+        ? parsed.type : 'other') as AttachmentSummary['type'],
+      summary: String(parsed.summary || '').trim(),
+      keyData: Array.isArray(parsed.keyData) ? (parsed.keyData as unknown[]).map(String) : [],
+    }
+  } catch {
+    return fallback
+  }
+}
+
+// ─── Subject fallback ─────────────────────────────────────────────────────────
+
+function fromSubject(subject: string) {
   const parts = subject.split('|').map((p) => p.trim())
-  const name = parts.length >= 2 ? parts[1] : subject.replace(/AMARILO\s*\|?\s*/i, '').trim()
-  const city = parts.length >= 3 ? parts[2] : ''
-
-  // Try to extract month/year from subject
-  const monthYearMatch = subject.match(/\b(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\s*(\d{4})\b/i)
-  const monthYear = monthYearMatch ? `${monthYearMatch[1].toUpperCase()}${monthYearMatch[2]}` : ''
-
-  return { name: name.toUpperCase(), city: city.toUpperCase(), monthYear }
+  const name  = parts.length >= 2 ? parts[1] : subject.replace(/AMARILO\s*\|?\s*/i, '').trim()
+  const city  = parts.length >= 3 ? parts[2] : ''
+  const m     = subject.match(/\b(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\s*(\d{4})\b/i)
+  return { name: name.toUpperCase(), city: city.toUpperCase(), monthYear: m ? `${m[1].toUpperCase()}${m[2]}` : '' }
 }
 
-// Main extraction pipeline: AI → Regex → Subject fallback
+// ─── Main pipeline ────────────────────────────────────────────────────────────
+
+export interface TextSource {
+  filename: string
+  text: string
+  isBody?: boolean
+}
+
 export async function extractProject(
-  rawText: string,
-  filename: string,
+  sources: TextSource[],
   emailSubject: string,
-  emailFrom: string
+  emailFrom: string,
 ): Promise<ExtractedProject> {
-  // 1. Try Gemini AI first (most reliable for dynamic briefs)
-  const aiResult = await extractProjectWithAI(rawText, emailSubject, emailFrom)
-  if (aiResult && aiResult.projectName && aiResult.confidence !== 'low') {
-    // Fill missing fields from subject if AI didn't get them
-    if (!aiResult.city || !aiResult.projectName) {
-      const fromSubject = extractFromSubject(emailSubject)
-      if (!aiResult.projectName) aiResult.projectName = fromSubject.name
-      if (!aiResult.macroProject) aiResult.macroProject = fromSubject.name
-      if (!aiResult.city) aiResult.city = fromSubject.city
-      if (!aiResult.monthYear) aiResult.monthYear = fromSubject.monthYear
-    }
-    return aiResult
+  // Build combined text (body first, then attachments with separators)
+  const bodySource   = sources.find((s) => s.isBody)
+  const pdfSources   = sources.filter((s) => !s.isBody && s.text.trim().length > 50)
+
+  const combinedText = [
+    bodySource?.text ?? '',
+    ...pdfSources.map((s) => `\n\n=== ADJUNTO: ${s.filename} ===\n${s.text}`),
+  ].join('\n').trim()
+
+  const emptyCampaign: CampaignDetail = {
+    channels: [], objectives: [], rtb: [], targetAudience: '', competition: '',
+    tone: '', dos: [], donts: [], learnings: [], resources: '', salesRoomAddress: '',
+    investmentPhases: [], kpis: [], attachmentSummaries: [],
   }
 
-  // 2. Fallback: regex-based parser
-  if (rawText.trim().length > 50) {
+  // 1. AI project metadata + campaign (run concurrently)
+  const [aiMeta, campaign] = await Promise.all([
+    extractProjectMeta(combinedText, emailSubject, emailFrom),
+    extractCampaignDetail(combinedText),
+  ])
+
+  // 2. Summarize each attachment separately
+  const summaries = await Promise.all(
+    pdfSources.map((s) => summarizeAttachment(s.filename, s.text))
+  )
+  campaign.attachmentSummaries = summaries
+
+  // 3. If AI succeeded with good confidence, return it
+  if (aiMeta && aiMeta.projectName && aiMeta.confidence !== 'low') {
+    // Fill gaps from subject
+    const sub = fromSubject(emailSubject)
+    if (!aiMeta.city)       aiMeta.city       = sub.city
+    if (!aiMeta.projectName) aiMeta.projectName = sub.name
+    if (!aiMeta.macroProject) aiMeta.macroProject = aiMeta.projectName
+    if (!aiMeta.monthYear)  aiMeta.monthYear  = sub.monthYear
+    return { ...aiMeta, campaign }
+  }
+
+  // 4. Regex fallback (use first non-empty text source)
+  const mainText = pdfSources[0]?.text || bodySource?.text || ''
+  const mainFile = pdfSources[0]?.filename || 'email.txt'
+  if (mainText.trim().length > 50) {
     try {
-      const brief = parseBriefText(rawText, filename, emailSubject)
-      const regexResult = parsedBriefToExtracted(brief)
-      if (regexResult.projectName) {
-        // Supplement with AI partial results if available
-        if (aiResult) {
-          if (!regexResult.city && aiResult.city) regexResult.city = aiResult.city
-          if (!regexResult.monthYear && aiResult.monthYear) regexResult.monthYear = aiResult.monthYear
-          if (regexResult.torres.length === 0 && aiResult.torres.length > 0) regexResult.torres = aiResult.torres
+      const brief = parseBriefText(mainText, mainFile, emailSubject)
+      if (brief.projectName) {
+        const missing: string[] = []
+        if (!brief.city)      missing.push('city')
+        if (!brief.monthYear) missing.push('monthYear')
+        // Merge regex campaign info into AI campaign (AI takes precedence)
+        if (campaign.channels.length === 0) campaign.channels = brief.channels
+        if (campaign.rtb.length === 0)      campaign.rtb      = brief.rtb
+        if (campaign.dos.length === 0)      campaign.dos      = brief.dos
+        if (campaign.donts.length === 0)    campaign.donts    = brief.donts
+        if (campaign.learnings.length === 0) campaign.learnings = brief.learnings
+        if (!campaign.resources)            campaign.resources = brief.resources
+        if (!campaign.salesRoomAddress)     campaign.salesRoomAddress = brief.salesRoomAddress || ''
+        return {
+          projectName: brief.projectName,
+          macroProject: brief.macroProject,
+          city: brief.city,
+          type: brief.type,
+          stage: brief.stage,
+          monthYear: brief.monthYear,
+          torres: brief.torres,
+          campaign,
+          parseSource: 'REGEX',
+          confidence: missing.length === 0 ? 'high' : missing.length === 1 ? 'medium' : 'low',
+          missingFields: missing,
         }
-        return regexResult
       }
-    } catch (err) {
-      console.error('Regex parser failed:', err)
-    }
+    } catch { /* fall through */ }
   }
 
-  // 3. Last resort: extract from subject line only
-  const fromSubject = extractFromSubject(emailSubject)
+  // 5. Last resort: subject only
+  const sub = fromSubject(emailSubject)
   return {
-    projectName: fromSubject.name || emailSubject,
-    macroProject: fromSubject.name || emailSubject,
-    city: fromSubject.city,
+    projectName: sub.name || emailSubject,
+    macroProject: sub.name || emailSubject,
+    city: sub.city,
     type: 'NO VIS',
     stage: 'SOSTENIMIENTO',
-    monthYear: fromSubject.monthYear,
-    torres: [{ name: fromSubject.name || 'Principal', areas: [], leadGoal: 0, budget: 0 }],
-    channels: [],
-    rtb: [],
-    dos: [],
-    donts: [],
-    learnings: [],
-    resources: '',
-    salesRoomAddress: '',
+    monthYear: sub.monthYear,
+    torres: [{ name: sub.name || 'Principal', areas: [], leadGoal: 0, budget: 0 }],
+    campaign: { ...emptyCampaign, attachmentSummaries: summaries },
     parseSource: 'SUBJECT',
     confidence: 'low',
     missingFields: ['type', 'stage', 'torres', 'monthYear'],
