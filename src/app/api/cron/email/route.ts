@@ -77,27 +77,41 @@ export async function GET(req: Request) {
       })
 
       // Parse brief
-      const brief = await processEmailBrief(email)
-      if (!brief) {
+      const parseResult = await processEmailBrief(email)
+      if (!parseResult) {
         await prisma.emailLog.update({
           where: { messageId: email.messageId },
-          data: { error: 'Failed to parse PDF' },
+          data: { error: 'No parseable content (no PDF and no body text)' },
         })
         continue
       }
 
-      // Create project
+      const { brief, rawText } = parseResult
+
+      // Skip if another project already has this email message ID
+      const duplicate = await prisma.project.findFirst({
+        where: { emailMessageId: email.messageId },
+      })
+      if (duplicate) {
+        await prisma.emailLog.update({
+          where: { messageId: email.messageId },
+          data: { processed: true, projectId: duplicate.id },
+        })
+        continue
+      }
+
+      // Create project — save rawText so IA analysis and search work later
       const project = await prisma.project.create({
         data: {
-          name: brief.projectName,
-          macroProject: brief.macroProject,
-          city: brief.city,
+          name: brief.projectName || email.subject,
+          macroProject: brief.macroProject || brief.projectName || email.subject,
+          city: brief.city || '',
           type: brief.type,
           stage: brief.stage,
           monthYear: brief.monthYear,
-          briefFileName: email.attachmentName,
+          briefFileName: email.attachmentName || '',
           briefParsedAt: new Date(),
-          briefRawText: '',
+          briefRawText: rawText,
           emailSubject: email.subject,
           emailReceivedAt: email.receivedAt,
           emailMessageId: email.messageId,

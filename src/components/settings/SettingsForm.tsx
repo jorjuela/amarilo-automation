@@ -27,6 +27,8 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
   const [saved, setSaved] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
+  const [diagnosing, setDiagnosing] = useState(false)
+  const [diagResult, setDiagResult] = useState<string | null>(null)
   const [oauthStatus, setOauthStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [oauthMessage, setOauthMessage] = useState('')
 
@@ -75,6 +77,45 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
     } finally {
       setSaving(false)
       setTimeout(() => setSaved(false), 3000)
+    }
+  }
+
+  async function handleDiagnose() {
+    setDiagnosing(true)
+    setDiagResult(null)
+    try {
+      const res = await fetch('/api/cron/debug')
+      const data = await res.json()
+      if (data.error?.includes('invalid_grant') || data.needsReauth) {
+        setDiagResult('NEEDS_REAUTH')
+        return
+      }
+      if (data.error) {
+        setDiagResult(`Error: ${data.error}`)
+        return
+      }
+      // Format a readable summary
+      const lines = [
+        `📬 Emails encontrados en Gmail: ${data.total}`,
+        `✅ Listos para procesar: ${data.willProcess}`,
+        `🔁 Ya procesados: ${data.alreadyProcessed}`,
+        `❌ Subject no coincide con patrón AMARILO: ${data.patternMismatch}`,
+        '',
+        ...data.emails.map((e: {
+          subject: string; date: string; isUnread: boolean;
+          patternMatch: boolean; alreadyProcessed: boolean; willProcess: boolean; logError?: string
+        }) =>
+          `${e.willProcess ? '▶' : e.alreadyProcessed ? '✓' : '✗'} [${e.date.slice(0,16)}] ${e.subject}` +
+          (e.logError ? ` ⚠ ${e.logError}` : '') +
+          (!e.patternMatch ? ' (subject no coincide)' : '') +
+          (e.alreadyProcessed ? ' (ya procesado)' : '')
+        ),
+      ]
+      setDiagResult(lines.join('\n'))
+    } catch (err) {
+      setDiagResult(`Error: ${err}`)
+    } finally {
+      setDiagnosing(false)
     }
   }
 
@@ -264,14 +305,33 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
           <code className="bg-gray-100 px-1 rounded">CRON_SECRET</code> y agrega la URL{' '}
           <code className="bg-gray-100 px-1 rounded">/api/cron/email</code> a tu servicio de cron (Vercel Cron, cron-job.org, etc.)
         </p>
-        <button
-          type="button"
-          onClick={handleTestEmail}
-          disabled={testing}
-          className="mt-3 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200 disabled:opacity-60"
-        >
-          {testing ? 'Ejecutando...' : 'Ejecutar manualmente ahora'}
-        </button>
+        <div className="mt-3 flex gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={handleTestEmail}
+            disabled={testing}
+            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200 disabled:opacity-60"
+          >
+            {testing ? 'Ejecutando...' : '▶ Ejecutar manualmente'}
+          </button>
+          <button
+            type="button"
+            onClick={handleDiagnose}
+            disabled={diagnosing}
+            className="px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg text-sm font-medium hover:bg-blue-100 disabled:opacity-60"
+          >
+            {diagnosing ? 'Diagnosticando...' : '🔍 Diagnóstico de emails'}
+          </button>
+        </div>
+        {diagResult && diagResult !== 'NEEDS_REAUTH' && (
+          <pre className="mt-3 p-3 bg-gray-900 text-cyan-300 text-xs rounded-lg overflow-x-auto whitespace-pre-wrap">{diagResult}</pre>
+        )}
+        {diagResult === 'NEEDS_REAUTH' && (
+          <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+            Token expirado. <a href="/api/auth/gmail" className="underline font-medium">Re-conectar Gmail →</a>
+          </div>
+        )}
+
         {testResult === 'NEEDS_REAUTH' ? (
           <div className="mt-3 p-4 bg-red-50 border border-red-200 rounded-xl">
             <div className="flex items-start gap-3">
