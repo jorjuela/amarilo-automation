@@ -66,9 +66,10 @@ model TrafficEntry {
   weekEnd     DateTime
   weekLabel   String   // e.g. "JUN W1"
   dayOfWeek   String   // Lunes, Martes, etc.
+  date        DateTime? // exact calendar date
 
   campaign    String
-  pm          String
+  pm          String   @default("")
   requirement String
   numTexts    Int     @default(0)
   copyName    String?
@@ -77,11 +78,24 @@ model TrafficEntry {
   status      String  @default("pending")
   jiraTicket  String?
   notes       String?
+  hoursEstimated Float @default(2)
+  aiGenerated    Boolean @default(false)
 
   projectId String
   project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@map("traffic_entries")
+}
+
+model Collaborator {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  name      String   @unique
+  role      String   // COPY | GRAFICO | ESTRATEGA
+  color     String   @default("#6B7280")
+  active    Boolean  @default(true)
+
+  @@map("collaborators")
 }
 
 model JiraStructure {

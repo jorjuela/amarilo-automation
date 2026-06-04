@@ -1,46 +1,81 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { getSessionFromRequest } from '@/lib/auth'
 import { generateTrafficExcel } from '@/lib/excel/traffic'
 import type { TrafficEntry, TrafficWeek } from '@/types'
 
 export async function GET(req: NextRequest) {
+  const session = getSessionFromRequest(req)
+  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
   const { searchParams } = new URL(req.url)
   const projectId = searchParams.get('projectId')
   const weekLabel = searchParams.get('weekLabel')
   const weekStart = searchParams.get('weekStart')
-  const weekEnd = searchParams.get('weekEnd')
+  const weekEnd   = searchParams.get('weekEnd')
 
-  if (!projectId || !weekLabel) {
-    return NextResponse.json({ error: 'Missing params' }, { status: 400 })
+  if (!weekLabel || !weekStart || !weekEnd) {
+    return NextResponse.json({ error: 'weekLabel, weekStart and weekEnd are required' }, { status: 400 })
   }
 
   try {
-    const project = await prisma.project.findUnique({ where: { id: projectId } })
-    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
-
-    const entries = await prisma.trafficEntry.findMany({
-      where: { projectId, weekLabel },
-      orderBy: { dayOfWeek: 'asc' },
-    })
-
-    const weekData: TrafficWeek = {
+    const where = {
       weekLabel,
-      weekStart: weekStart || new Date().toISOString().split('T')[0],
-      weekEnd: weekEnd || new Date().toISOString().split('T')[0],
-      entries: entries as unknown as TrafficEntry[],
+      ...(projectId ? { projectId } : {}),
     }
 
+    const rawEntries = await prisma.trafficEntry.findMany({
+      where,
+      include: { project: { select: { name: true, city: true } } },
+      orderBy: [{ dayOfWeek: 'asc' }, { createdAt: 'asc' }],
+    })
+
+    // Load active collaborators for team lists
+    const collabs = await prisma.collaborator.findMany({ where: { active: true } })
+    const copyTeam    = collabs.filter((c) => c.role === 'COPY').map((c) => c.name)
+    const graphicTeam = collabs.filter((c) => c.role === 'GRAFICO').map((c) => c.name)
+
+    type RawEntry = typeof rawEntries[0] & { project?: { name: string; city: string } }
+
+    const entries: (TrafficEntry & { city?: string })[] = rawEntries.map((e) => ({
+      id:          e.id,
+      weekStart:   e.weekStart.toISOString(),
+      weekEnd:     e.weekEnd.toISOString(),
+      weekLabel:   e.weekLabel,
+      dayOfWeek:   e.dayOfWeek,
+      campaign:    e.campaign,
+      pm:          e.pm,
+      requirement: e.requirement,
+      numTexts:    e.numTexts,
+      copyName:    e.copyName ?? undefined,
+      numGraphics: e.numGraphics,
+      graphicName: e.graphicName ?? undefined,
+      status:      e.status,
+      jiraTicket:  e.jiraTicket ?? undefined,
+      notes:       e.notes ?? undefined,
+      projectId:   e.projectId,
+      city:        (e as RawEntry).project?.city ?? '',
+    }))
+
+    const projectName = rawEntries[0]
+      ? ((rawEntries[0] as RawEntry).project?.name ?? 'Tráfico')
+      : 'Tráfico'
+
+    const weekData: TrafficWeek = { weekLabel, weekStart, weekEnd, entries: [] }
+
     const buffer = await generateTrafficExcel(
-      entries as unknown as TrafficEntry[],
+      entries,
       weekData,
-      project.name
+      projectName,
+      copyTeam.length    > 0 ? copyTeam    : ['Jaime', 'Laura G', 'Nata', 'Nico P'],
+      graphicTeam.length > 0 ? graphicTeam : ['Nico', 'Carlos', 'Andres S', 'Brausin'],
     )
 
-    const filename = `Trafico-${project.name.replace(/\s+/g, '-')}-${weekLabel}.xlsx`
+    const safeName = projectName.replace(/\s+/g, '-').replace(/[^\w-]/g, '')
     return new NextResponse(buffer as unknown as BodyInit, {
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Disposition': `attachment; filename="Trafico-${safeName}-${weekLabel.replace(' ', '-')}.xlsx"`,
       },
     })
   } catch (error) {

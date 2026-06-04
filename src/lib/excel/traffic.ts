@@ -1,300 +1,400 @@
 import ExcelJS from 'exceljs'
 import type { TrafficEntry, TrafficWeek } from '@/types'
-import { TEAM_MEMBERS, DAYS_OF_WEEK } from '@/types'
-import { format, startOfWeek, addDays } from 'date-fns'
+import { DAYS_OF_WEEK } from '@/types'
+import { format, addDays, startOfWeek } from 'date-fns'
 import { es } from 'date-fns/locale'
 
-const HEADER_FILL: ExcelJS.Fill = {
-  type: 'pattern',
-  pattern: 'solid',
-  fgColor: { argb: 'FF1B3D6B' }, // dark navy
-}
-const COPY_FILL: ExcelJS.Fill = {
-  type: 'pattern',
-  pattern: 'solid',
-  fgColor: { argb: 'FFFFF9C4' }, // light yellow
-}
-const GRAPHIC_FILL: ExcelJS.Fill = {
-  type: 'pattern',
-  pattern: 'solid',
-  fgColor: { argb: 'FFE1F5FE' }, // light blue
-}
-const STRATEGIST_FILL: ExcelJS.Fill = {
-  type: 'pattern',
-  pattern: 'solid',
-  fgColor: { argb: 'FFE8F5E9' }, // light green
-}
-const AMARILO_YELLOW: ExcelJS.Fill = {
-  type: 'pattern',
-  pattern: 'solid',
-  fgColor: { argb: 'FFFABD02' }, // amarilo yellow
-}
-const DARK_ROW: ExcelJS.Fill = {
-  type: 'pattern',
-  pattern: 'solid',
-  fgColor: { argb: 'FF3C3C3C' }, // dark separator
+// ─── Color palette ────────────────────────────────────────────────────────────
+const C = {
+  navy:       'FF1B3D6B',
+  yellow:     'FFFABD02',
+  redLabel:   'FFCC0000',
+  lightBlue:  'FFB8D4E8',
+  lightGreen: 'FFB8D4B8',
+  lightPink:  'FFEDBBBB',
+  lightPurple:'FFD5C8E8',
+  tan:        'FFD4B896',
+  white:      'FFFFFFFF',
+  darkGray:   'FF3C3C3C',
+  medGray:    'FFD0D0D0',
+  lightYellow:'FFFFF3CD',
+  headerRow:  'FF2D2D2D',
+  totalBg:    'FF1B3D6B',
 }
 
-function bold(size = 10): Partial<ExcelJS.Font> {
-  return { bold: true, size }
-}
-function white(): Partial<ExcelJS.Font> {
-  return { color: { argb: 'FFFFFFFF' }, bold: true, size: 10 }
+// Collaborator colors (match the screenshot pastel chips)
+const COLLAB_COLORS: Record<string, string> = {
+  Jaime:    'FFFFFFFF',
+  'Laura G':'FFFFF9C4',
+  Nata:     'FFE1F5FE',
+  'Nico P': 'FFE8F5E9',
+  Nico:     'FFFCE4EC',
+  Nicolas:  'FFFCE4EC',
+  'Andres S':'FFE8F5E9',
+  Angie:    'FFF3E5F5',
+  Sebas:    'FFFFE0B2',
+  Carlos:   'FFE3F2FD',
+  'Dani S': 'FFEDE7F6',
+  'Andrés C':'FFFFE8E8',
+  Brausin:  'FFD4B896',
+  NA:       'FFD4B896',
 }
 
-function setBorder(cell: ExcelJS.Cell) {
+function fill(argb: string): ExcelJS.Fill {
+  return { type: 'pattern', pattern: 'solid', fgColor: { argb: argb } }
+}
+function font(opts: Partial<ExcelJS.Font> = {}): Partial<ExcelJS.Font> {
+  return { size: 10, ...opts }
+}
+function border(cell: ExcelJS.Cell) {
   cell.border = {
-    top: { style: 'thin', color: { argb: 'FFCCCCCC' } },
-    left: { style: 'thin', color: { argb: 'FFCCCCCC' } },
+    top:    { style: 'thin', color: { argb: 'FFCCCCCC' } },
+    left:   { style: 'thin', color: { argb: 'FFCCCCCC' } },
     bottom: { style: 'thin', color: { argb: 'FFCCCCCC' } },
-    right: { style: 'thin', color: { argb: 'FFCCCCCC' } },
+    right:  { style: 'thin', color: { argb: 'FFCCCCCC' } },
   }
+}
+function center(cell: ExcelJS.Cell) {
+  cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: false }
 }
 
 export function getWeeksInMonth(year: number, month: number): TrafficWeek[] {
   const weeks: TrafficWeek[] = []
   const monthNames = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
-  const monthAbbr = monthNames[month - 1]
-
+  const abbr = monthNames[month - 1]
   let weekNum = 1
   const firstDay = new Date(year, month - 1, 1)
   let current = startOfWeek(firstDay, { weekStartsOn: 1 })
 
-  while (current.getMonth() <= month - 1 || current <= new Date(year, month - 1, 31)) {
+  while (true) {
     const weekStart = current
     const weekEnd = addDays(current, 4)
-
     if (weekStart.getMonth() === month - 1 || weekEnd.getMonth() === month - 1) {
       weeks.push({
-        weekLabel: `${monthAbbr} S${weekNum}`,
+        weekLabel: `${abbr} S${weekNum}`,
         weekStart: format(weekStart, 'yyyy-MM-dd'),
         weekEnd: format(weekEnd, 'yyyy-MM-dd'),
         entries: [],
       })
       weekNum++
     }
-
     current = addDays(current, 7)
-    if (weekStart.getMonth() > month - 1) break
-    if (weekNum > 5) break
+    if (weekStart.getMonth() > month - 1 || weekNum > 6) break
   }
-
   return weeks
 }
 
 export async function generateTrafficExcel(
   entries: TrafficEntry[],
   weekData: TrafficWeek,
-  projectName: string
+  projectName: string,
+  copyTeam: string[] = ['Jaime', 'Laura G', 'Nata', 'Nico P'],
+  graphicTeam: string[] = ['Nico', 'Carlos', 'Andres S', 'Brausin'],
 ): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook()
   workbook.creator = 'Amarilo Automation'
   workbook.created = new Date()
 
-  const weekDays = DAYS_OF_WEEK
-  const sheet = workbook.addWorksheet(weekData.weekLabel)
-
-  sheet.pageSetup.paperSize = 9 // A4
-  sheet.pageSetup.orientation = 'landscape'
-
-  // Column widths
-  sheet.columns = [
-    { width: 12 }, // Day / DICS label
-    { width: 20 }, // Name / Campaña
-    { width: 15 }, // PM
-    { width: 35 }, // Requerimiento
-    { width: 8  }, // #Textos
-    { width: 15 }, // Copy
-    { width: 8  }, // #Gráficas
-    { width: 15 }, // Gráfico
-    { width: 12 }, // Estado
-    { width: 15 }, // Jira
-  ]
-
-  // ── DICS label (col A, rows 1-13) ──
-  const dicsRows = 1 + TEAM_MEMBERS.copy.length + TEAM_MEMBERS.graphic.length + TEAM_MEMBERS.strategist.length + 2
-
-  // Row 1: Anotaciones + LUNES..VIERNES headers
-  const r1 = sheet.getRow(1)
-  r1.getCell(2).value = 'Anotaciones generales'
-  r1.getCell(2).font = { bold: true, size: 10 }
-
-  // Day headers start at col 3 (C)
-  const dayStartCol = 3
-  const weekStartDate = new Date(weekData.weekStart)
-  weekDays.forEach((day, i) => {
-    const col = dayStartCol + i
-    const date = addDays(weekStartDate, i)
-    const cell = r1.getCell(col)
-    cell.value = `${day.toUpperCase().slice(0, 3)} ${format(date, 'd')}`
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1B3D6B' } }
-    cell.font = white()
-    cell.alignment = { horizontal: 'center', vertical: 'middle' }
-    setBorder(cell)
+  const ws = workbook.addWorksheet(weekData.weekLabel, {
+    pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1 },
   })
 
-  // Merge DICS label (A1:A{dicsRows})
-  sheet.mergeCells(1, 1, dicsRows, 1)
-  const dicsCell = sheet.getCell(1, 1)
-  dicsCell.value = 'D I C S'
-  dicsCell.font = { bold: true, size: 14, color: { argb: 'FF1B3D6B' } }
-  dicsCell.alignment = { textRotation: 90, vertical: 'middle', horizontal: 'center' }
-  dicsCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } }
+  // Extract month/week from label e.g. "Jun S1"
+  const labelParts = weekData.weekLabel.split(' ')
+  const monthLabel = labelParts[0]?.toUpperCase() ?? ''
+  const weekNum = labelParts[1] ?? 'S1'
 
-  // ── Team member rows ──
-  let rowIdx = 2
+  const weekStartDate = new Date(weekData.weekStart)
+  const days = DAYS_OF_WEEK
 
-  // Copy section header
-  const copyHeaderRow = sheet.getRow(rowIdx)
-  copyHeaderRow.getCell(2).value = 'Copy'
-  copyHeaderRow.getCell(2).font = bold()
-  copyHeaderRow.getCell(2).fill = AMARILO_YELLOW
-  sheet.mergeCells(rowIdx, 2, rowIdx, 2)
-  rowIdx++
+  // ── Column widths ──────────────────────────────────────────────────────────
+  // A=month label, B=category, C=name, D-H=days, I=Total
+  ws.columns = [
+    { key: 'month',       width: 9  }, // A
+    { key: 'category',    width: 12 }, // B
+    { key: 'name',        width: 14 }, // C
+    ...days.map(() => ({ width: 12 })), // D-H
+    { key: 'total',       width: 10 }, // I
+  ]
 
-  for (const member of TEAM_MEMBERS.copy) {
-    const row = sheet.getRow(rowIdx)
-    row.getCell(2).value = member
-    row.getCell(2).font = bold()
-    row.getCell(2).fill = COPY_FILL
+  // ── ROW 1: month/week label + day headers ──────────────────────────────────
+  const r1 = ws.getRow(1)
+  r1.height = 36
 
-    for (let d = 0; d < weekDays.length; d++) {
-      const dayEntries = entries.filter(
-        (e) => e.dayOfWeek === weekDays[d] && e.copyName === member
-      )
-      const totalTexts = dayEntries.reduce((sum, e) => sum + (e.numTexts || 0), 0)
-      const cell = row.getCell(dayStartCol + d)
-      cell.value = totalTexts || 0
-      cell.alignment = { horizontal: 'center' }
-      cell.fill = COPY_FILL
-      setBorder(cell)
-    }
-    rowIdx++
+  // A1:A2 = Month label (merged, big)
+  ws.mergeCells('A1:A2')
+  const monthCell = ws.getCell('A1')
+  monthCell.value = monthLabel
+  monthCell.font = font({ size: 28, bold: true, color: { argb: C.redLabel } })
+  monthCell.alignment = { horizontal: 'center', vertical: 'middle' }
+  monthCell.fill = fill(C.yellow)
+
+  // B1:C1 = week label
+  ws.mergeCells('B1:C1')
+  const weekCell = ws.getCell('B1')
+  weekCell.value = weekNum
+  weekCell.font = font({ size: 20, bold: true, color: { argb: C.redLabel } })
+  weekCell.alignment = { horizontal: 'center', vertical: 'middle' }
+  weekCell.fill = fill(C.yellow)
+
+  // Day headers D1:H1
+  days.forEach((day, i) => {
+    const col = 4 + i // D=4
+    const date = addDays(weekStartDate, i)
+    const cell = r1.getCell(col)
+    cell.value = `${day.toUpperCase().slice(0, 2)} ${format(date, 'd')}\n${format(date, 'MMM', { locale: es }).toUpperCase()}`
+    cell.font = font({ bold: true, color: { argb: C.white } })
+    cell.fill = fill(C.navy)
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
+    border(cell)
+  })
+
+  // I1 = TOTAL header
+  const totalH = r1.getCell(9)
+  totalH.value = 'TOTAL'
+  totalH.font = font({ bold: true, color: { argb: C.white } })
+  totalH.fill = fill(C.navy)
+  center(totalH)
+  border(totalH)
+
+  // ── ROW 2: Sub-week label cell ─────────────────────────────────────────────
+  const r2 = ws.getRow(2)
+  r2.height = 18
+  // B2:C2
+  ws.mergeCells('B2:C2')
+  const subWeek = ws.getCell('B2')
+  subWeek.value = weekData.weekLabel
+  subWeek.font = font({ bold: true })
+  subWeek.fill = fill(C.yellow)
+  subWeek.alignment = { horizontal: 'center', vertical: 'middle' }
+
+  // Day date numbers row
+  days.forEach((_, i) => {
+    const cell = r2.getCell(4 + i)
+    cell.fill = fill(C.lightBlue)
+    border(cell)
+  })
+  ws.getCell('I2').fill = fill(C.medGray)
+  border(ws.getCell('I2'))
+
+  // ── SUMMARY SECTION ────────────────────────────────────────────────────────
+  let row = 3
+
+  // Copy header row
+  {
+    const r = ws.getRow(row); r.height = 18
+    ws.mergeCells(row, 2, row, 3)
+    const c = r.getCell(2)
+    c.value = 'Copy'
+    c.font = font({ bold: true, color: { argb: C.white } })
+    c.fill = fill(C.navy)
+    c.alignment = { horizontal: 'center', vertical: 'middle' }
+    border(c)
+    days.forEach((_, i) => { border(r.getCell(4 + i)); r.getCell(4 + i).fill = fill(C.lightBlue) })
+    const totCell = r.getCell(9); totCell.fill = fill(C.lightBlue); border(totCell)
+    row++
   }
 
-  // Graphic section header
-  const gfxHeaderRow = sheet.getRow(rowIdx)
-  gfxHeaderRow.getCell(2).value = 'Gráfico'
-  gfxHeaderRow.getCell(2).font = bold()
-  gfxHeaderRow.getCell(2).fill = AMARILO_YELLOW
-  rowIdx++
+  // Copy member rows
+  for (const member of copyTeam) {
+    const r = ws.getRow(row); r.height = 18
+    const nameCell = r.getCell(3)
+    nameCell.value = member
+    nameCell.font = font({ bold: true })
+    nameCell.fill = fill(COLLAB_COLORS[member] ?? C.white)
+    border(nameCell)
 
-  for (const member of TEAM_MEMBERS.graphic) {
-    const row = sheet.getRow(rowIdx)
-    row.getCell(2).value = member
-    row.getCell(2).font = bold()
-    row.getCell(2).fill = GRAPHIC_FILL
+    // B = empty category
+    r.getCell(2).fill = fill(C.lightYellow)
+    border(r.getCell(2))
 
-    for (let d = 0; d < weekDays.length; d++) {
-      const dayEntries = entries.filter(
-        (e) => e.dayOfWeek === weekDays[d] && e.graphicName === member
-      )
-      const totalGraphics = dayEntries.reduce((sum, e) => sum + (e.numGraphics || 0), 0)
-      const cell = row.getCell(dayStartCol + d)
-      cell.value = totalGraphics || 0
-      cell.alignment = { horizontal: 'center' }
-      cell.fill = GRAPHIC_FILL
-      setBorder(cell)
-    }
-    rowIdx++
+    let memberTotal = 0
+    days.forEach((day, i) => {
+      const count = entries.filter((e) => e.dayOfWeek === day && e.copyName === member)
+        .reduce((s, e) => s + (e.numTexts || 0), 0)
+      memberTotal += count
+      const cell = r.getCell(4 + i)
+      cell.value = count || ''
+      cell.font = font({ bold: count > 0 })
+      cell.fill = fill(count > 0 ? C.lightBlue : C.white)
+      cell.alignment = { horizontal: 'center', vertical: 'middle' }
+      border(cell)
+    })
+    const totC = r.getCell(9)
+    totC.value = memberTotal || ''
+    totC.font = font({ bold: true })
+    totC.fill = fill(memberTotal > 0 ? C.lightBlue : C.medGray)
+    center(totC); border(totC)
+    row++
   }
 
-  // Strategist section
-  for (const member of TEAM_MEMBERS.strategist) {
-    const row = sheet.getRow(rowIdx)
-    row.getCell(2).value = 'Strategist'
-    row.getCell(3 - 1).value = member  // Inline with strategist label
-    row.getCell(2).font = bold()
-    row.getCell(2).fill = STRATEGIST_FILL
+  // Graphic header row
+  {
+    const r = ws.getRow(row); r.height = 18
+    ws.mergeCells(row, 2, row, 3)
+    const c = r.getCell(2)
+    c.value = 'Gráfico'
+    c.font = font({ bold: true, color: { argb: C.white } })
+    c.fill = fill(C.navy)
+    c.alignment = { horizontal: 'center', vertical: 'middle' }
+    border(c)
+    days.forEach((_, i) => { border(r.getCell(4 + i)); r.getCell(4 + i).fill = fill(C.lightGreen) })
+    ws.getCell(row, 9).fill = fill(C.lightGreen); border(ws.getCell(row, 9))
+    row++
+  }
 
-    for (let d = 0; d < weekDays.length; d++) {
-      const cell = row.getCell(dayStartCol + d)
-      cell.value = 0
-      cell.fill = STRATEGIST_FILL
-      setBorder(cell)
-    }
-    rowIdx++
+  // Graphic member rows
+  for (const member of graphicTeam) {
+    const r = ws.getRow(row); r.height = 18
+    const nameCell = r.getCell(3)
+    nameCell.value = member
+    nameCell.font = font({ bold: true })
+    nameCell.fill = fill(COLLAB_COLORS[member] ?? C.white)
+    border(nameCell)
+    r.getCell(2).fill = fill(C.lightYellow); border(r.getCell(2))
+
+    let memberTotal = 0
+    days.forEach((day, i) => {
+      const count = entries.filter((e) => e.dayOfWeek === day && e.graphicName === member)
+        .reduce((s, e) => s + (e.numGraphics || 0), 0)
+      memberTotal += count
+      const cell = r.getCell(4 + i)
+      cell.value = count || ''
+      cell.font = font({ bold: count > 0 })
+      cell.fill = fill(count > 0 ? C.lightGreen : C.white)
+      cell.alignment = { horizontal: 'center', vertical: 'middle' }
+      border(cell)
+    })
+    const totC = r.getCell(9)
+    totC.value = memberTotal || ''
+    totC.font = font({ bold: true })
+    totC.fill = fill(memberTotal > 0 ? C.lightGreen : C.medGray)
+    center(totC); border(totC)
+    row++
   }
 
   // Total row
-  const totalRow = sheet.getRow(rowIdx)
-  totalRow.getCell(2).value = 'Total'
-  totalRow.getCell(2).font = { bold: true, size: 10 }
-  totalRow.getCell(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } }
+  {
+    const r = ws.getRow(row); r.height = 20
+    ws.mergeCells(row, 1, row, 3)
+    const totLabel = r.getCell(1)
+    totLabel.value = 'Total'
+    totLabel.font = font({ bold: true, color: { argb: C.white } })
+    totLabel.fill = fill(C.totalBg)
+    totLabel.alignment = { horizontal: 'center', vertical: 'middle' }
 
-  for (let d = 0; d < weekDays.length; d++) {
-    const dayEntries = entries.filter((e) => e.dayOfWeek === weekDays[d])
-    const total = dayEntries.reduce((sum, e) => sum + (e.numTexts || 0) + (e.numGraphics || 0), 0)
-    const cell = totalRow.getCell(dayStartCol + d)
-    cell.value = total
-    cell.font = { bold: true }
-    cell.alignment = { horizontal: 'center' }
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } }
-    setBorder(cell)
+    let grandTotal = 0
+    days.forEach((day, i) => {
+      const dayTotal = entries.filter((e) => e.dayOfWeek === day)
+        .reduce((s, e) => s + (e.numTexts || 0) + (e.numGraphics || 0), 0)
+      grandTotal += dayTotal
+      const cell = r.getCell(4 + i)
+      cell.value = dayTotal
+      cell.font = font({ bold: true, color: { argb: C.white } })
+      cell.fill = fill(C.totalBg)
+      cell.alignment = { horizontal: 'center', vertical: 'middle' }
+      border(cell)
+    })
+    const totC = r.getCell(9)
+    totC.value = grandTotal
+    totC.font = font({ bold: true, color: { argb: C.white } })
+    totC.fill = fill(C.totalBg)
+    center(totC); border(totC)
+    row++
   }
-  rowIdx++
 
-  // ── Task detail table ──
-  const tableHeaderRow = sheet.getRow(rowIdx)
-  const tableHeaders = ['', 'Campaña', 'PM', 'Requerimiento', '# Textos', 'Copy', '# Gráficas', 'Gráfico', 'Estado', 'Jira']
+  // ── Empty row ──────────────────────────────────────────────────────────────
+  row++
 
-  tableHeaders.forEach((h, i) => {
-    const cell = tableHeaderRow.getCell(i + 1)
-    cell.value = h
-    cell.font = white()
-    cell.fill = HEADER_FILL
-    cell.alignment = { horizontal: 'center', vertical: 'middle' }
-    setBorder(cell)
+  // ── DETAIL TABLE HEADER ────────────────────────────────────────────────────
+  // Widen columns for detail table: redefine from column A
+  // A=Día, B=Campaña, C=Ciudad, D=Requerimiento, E=#Textos, F=Copy, G=#Gráficas, H=Gráfico, I=Estado
+  const detailCols: { label: string; width: number }[] = [
+    { label: '',               width: 9  },
+    { label: 'Campaña',        width: 20 },
+    { label: 'Ciudad',         width: 14 },
+    { label: 'Requerimiento',  width: 38 },
+    { label: '# Textos',       width: 8  },
+    { label: 'Copy',           width: 14 },
+    { label: '# Gráficas',     width: 10 },
+    { label: 'Gráfico',        width: 14 },
+    { label: 'Estado',         width: 14 },
+  ]
+  detailCols.forEach((col, i) => {
+    ws.getColumn(i + 1).width = col.width
   })
-  rowIdx++
 
-  // Group entries by day
-  for (const day of weekDays) {
-    const dayEntries = entries.filter((e) => e.dayOfWeek === day)
+  const headerRow = ws.getRow(row); headerRow.height = 22
+  detailCols.forEach((col, i) => {
+    const cell = headerRow.getCell(i + 1)
+    cell.value = col.label
+    cell.font = font({ bold: true, color: { argb: C.white } })
+    cell.fill = fill(C.headerRow)
+    cell.alignment = { horizontal: 'center', vertical: 'middle' }
+    border(cell)
+  })
+  row++
 
-    if (dayEntries.length === 0) {
-      // Add empty rows for each day
-      for (let i = 0; i < 14; i++) {
-        const row = sheet.getRow(rowIdx)
-        row.getCell(1).value = i === 0 ? day : ''
-        row.getCell(1).font = { bold: i === 0, size: 10 }
-        row.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: i === 0 ? 'FFFABD02' : 'FFFFFFFF' } }
-        for (let c = 1; c <= 10; c++) setBorder(row.getCell(c))
-        rowIdx++
-      }
-    } else {
-      for (let i = 0; i < Math.max(dayEntries.length, 14); i++) {
-        const entry = dayEntries[i]
-        const row = sheet.getRow(rowIdx)
-        row.getCell(1).value = i === 0 ? day : ''
-        row.getCell(1).font = { bold: i === 0, size: 10 }
-        row.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: i === 0 ? 'FFFABD02' : 'FFFFFFFF' } }
-
-        if (entry) {
-          row.getCell(2).value = entry.campaign || ''
-          row.getCell(3).value = entry.pm || ''
-          row.getCell(4).value = entry.requirement || ''
-          row.getCell(5).value = entry.numTexts || 0
-          row.getCell(6).value = entry.copyName || ''
-          row.getCell(7).value = entry.numGraphics || 0
-          row.getCell(8).value = entry.graphicName || ''
-          row.getCell(9).value = entry.status || ''
-          row.getCell(10).value = entry.jiraTicket || ''
-        }
-
-        for (let c = 1; c <= 10; c++) setBorder(row.getCell(c))
-        rowIdx++
-      }
-    }
-
-    // Dark separator row between days
-    const sepRow = sheet.getRow(rowIdx)
-    for (let c = 1; c <= 10; c++) {
-      sepRow.getCell(c).fill = DARK_ROW
-    }
-    rowIdx++
+  const STATUS_LABELS: Record<string, string> = {
+    pending:     'Pendiente',
+    in_progress: 'En Progreso',
+    review:      'En Revisión',
+    done:        'Entregado',
   }
 
-  const buffer = await workbook.xlsx.writeBuffer()
-  return Buffer.from(buffer)
+  // ── Detail rows grouped by day ─────────────────────────────────────────────
+  for (const day of days) {
+    const dayEntries = entries.filter((e) => e.dayOfWeek === day)
+    const EMPTY_ROWS_PER_DAY = 10
+    const rowCount = Math.max(dayEntries.length, EMPTY_ROWS_PER_DAY)
+
+    for (let i = 0; i < rowCount; i++) {
+      const entry = dayEntries[i]
+      const r = ws.getRow(row); r.height = 18
+
+      // Day label only on first row
+      const dayCell = r.getCell(1)
+      if (i === 0) {
+        dayCell.value = day
+        dayCell.font = font({ bold: true })
+        dayCell.fill = fill(C.yellow)
+      } else {
+        dayCell.fill = fill(C.white)
+      }
+      border(dayCell)
+
+      if (entry) {
+        r.getCell(2).value = entry.campaign || ''
+        r.getCell(3).value = (entry as TrafficEntry & { city?: string }).city || ''
+        r.getCell(4).value = entry.requirement || ''
+        r.getCell(5).value = entry.numTexts || ''
+        r.getCell(6).value = entry.copyName || 'NA'
+        r.getCell(7).value = entry.numGraphics || ''
+        r.getCell(8).value = entry.graphicName || 'NA'
+        r.getCell(9).value = STATUS_LABELS[entry.status] || entry.status || 'Pendiente'
+
+        // Color the copy/graphic name cells
+        const copyBg = COLLAB_COLORS[entry.copyName ?? ''] ?? C.white
+        const gfxBg  = COLLAB_COLORS[entry.graphicName ?? ''] ?? C.white
+        r.getCell(6).fill = fill(entry.copyName && entry.copyName !== 'NA' ? copyBg : C.tan)
+        r.getCell(8).fill = fill(entry.graphicName && entry.graphicName !== 'NA' ? gfxBg : C.tan)
+      }
+
+      for (let c = 1; c <= 9; c++) {
+        const cell = r.getCell(c)
+        if (c !== 1) cell.fill = cell.fill ?? fill(C.white)
+        cell.alignment = { horizontal: c >= 5 ? 'center' : 'left', vertical: 'middle' }
+        border(cell)
+      }
+      row++
+    }
+
+    // Dark separator between days
+    const sep = ws.getRow(row); sep.height = 6
+    for (let c = 1; c <= 9; c++) sep.getCell(c).fill = fill(C.darkGray)
+    row++
+  }
+
+  const buf = await workbook.xlsx.writeBuffer()
+  return Buffer.from(buf)
 }
