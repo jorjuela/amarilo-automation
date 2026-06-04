@@ -22,6 +22,9 @@ model Project {
   briefFileName  String?
   briefParsedAt  DateTime?
   briefRawText   String?
+  parseSource    String?   // AI | REGEX | SUBJECT
+  parseConfidence String?  // high | medium | low
+  needsReview    Boolean   @default(false)
 
   emailSubject   String?
   emailReceivedAt DateTime?

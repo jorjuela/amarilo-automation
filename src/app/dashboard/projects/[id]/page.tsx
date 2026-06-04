@@ -106,6 +106,26 @@ export default async function ProjectDetailPage({
         </div>
       </div>
 
+      {/* Needs-review banner */}
+      {(project as { needsReview?: boolean }).needsReview && (
+        <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
+          <span className="text-xl flex-shrink-0">⚠️</span>
+          <div>
+            <p className="text-sm font-semibold text-amber-800">Este proyecto requiere revisión manual</p>
+            <p className="text-xs text-amber-600 mt-0.5">
+              El parser extrae la información con baja confianza
+              {(project as { parseSource?: string }).parseSource === 'SUBJECT' ? ' — solo se pudo leer el asunto del email' : ''}.
+              Verifica que el nombre, ciudad, tipo y etapa sean correctos.
+            </p>
+            {(project as { parseConfidence?: string }).parseConfidence && (
+              <p className="text-xs text-amber-500 mt-1">
+                Fuente: <strong>{(project as { parseSource?: string }).parseSource}</strong> · Confianza: <strong>{(project as { parseConfidence?: string }).parseConfidence}</strong>
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* KPI strip */}
       <div className="grid grid-cols-4 gap-4 mb-6">
         <div className="card p-4 text-center">

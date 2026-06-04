@@ -65,18 +65,24 @@ export default async function ProjectsPage() {
             const totalLeads = project.torres.reduce((sum, t) => sum + t.leadGoal, 0)
 
             return (
-              <Link key={project.id} href={`/dashboard/projects/${project.id}`} className="card p-5 hover:shadow-md transition-shadow block">
+              <Link key={project.id} href={`/dashboard/projects/${project.id}`} className={`card p-5 hover:shadow-md transition-shadow block ${(project as { needsReview?: boolean }).needsReview ? 'border-l-4 border-amber-400' : ''}`}>
                 <div className="flex items-start justify-between">
                   <div className="flex items-start gap-4">
                     <div className="w-12 h-12 rounded-xl flex items-center justify-center text-white font-bold text-lg flex-shrink-0" style={{ background: 'var(--amarilo-navy)' }}>
                       {project.name.charAt(0)}
                     </div>
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <h3 className="font-semibold text-gray-900">{project.name}</h3>
                         <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${style.bg} ${style.text}`}>{project.type}</span>
+                        {(project as { needsReview?: boolean }).needsReview && (
+                          <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-200">⚠ Requiere revisión</span>
+                        )}
+                        {(project as { parseSource?: string }).parseSource === 'AI' && (
+                          <span className="px-2 py-0.5 rounded-full text-xs bg-purple-50 text-purple-600">🤖 IA</span>
+                        )}
                       </div>
-                      <p className="text-sm text-gray-500 mt-0.5">{project.city} · {project.monthYear || 'Sin fecha'}</p>
+                      <p className="text-sm text-gray-500 mt-0.5">{project.city || '—'} · {project.monthYear || 'Sin fecha'}</p>
                       <div className="flex items-center gap-2 mt-2 flex-wrap">
                         {project.torres.slice(0, 4).map((t) => (
                           <span key={t.id} className="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded font-medium">{t.name}</span>
