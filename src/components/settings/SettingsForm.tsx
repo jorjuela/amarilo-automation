@@ -82,11 +82,7 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
     setTesting(true)
     setTestResult(null)
     try {
-      const res = await fetch('/api/cron/email')
-      if (res.status === 401) {
-        setTestResult('⚠️ Error 401: CRON_SECRET está activo. Déjalo vacío en .env.local para probar localmente.')
-        return
-      }
+      const res = await fetch('/api/cron/trigger', { method: 'POST' })
       const data = await res.json()
       setTestResult(JSON.stringify(data, null, 2))
     } catch (err) {
