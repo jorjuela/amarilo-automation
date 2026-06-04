@@ -10,8 +10,12 @@ export default async function LoginPage() {
   if (session) redirect('/dashboard')
 
   // No users yet → first-run setup
-  const userCount = await prisma.user.count()
-  if (userCount === 0) redirect('/setup')
+  try {
+    const userCount = await prisma.user.count()
+    if (userCount === 0) redirect('/setup')
+  } catch {
+    redirect('/setup')
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--amarilo-navy)' }}>
