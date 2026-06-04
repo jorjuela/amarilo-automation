@@ -17,5 +17,14 @@ export async function POST(req: NextRequest) {
 
   const res = await fetch(`${baseUrl}/api/cron/email`, { headers })
   const data = await res.json()
+
+  // Surface invalid_grant as a specific flag so the UI can show a re-auth prompt
+  if (typeof data.error === 'string' && data.error.includes('invalid_grant')) {
+    return NextResponse.json(
+      { error: data.error, needsReauth: true, message: 'El refresh token de Gmail expiró. Debes re-autorizar desde Configuración.' },
+      { status: 401 }
+    )
+  }
+
   return NextResponse.json(data, { status: res.status })
 }

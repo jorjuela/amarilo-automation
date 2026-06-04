@@ -84,7 +84,11 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
     try {
       const res = await fetch('/api/cron/trigger', { method: 'POST' })
       const data = await res.json()
-      setTestResult(JSON.stringify(data, null, 2))
+      if (data.error?.includes('invalid_grant') || data.needsReauth) {
+        setTestResult('NEEDS_REAUTH')
+      } else {
+        setTestResult(JSON.stringify(data, null, 2))
+      }
     } catch (err) {
       setTestResult(`Error: ${err}`)
     } finally {
@@ -156,6 +160,24 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
             className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-400 font-mono"
           />
         </div>
+
+        {settings.gmail?.clientId && settings.gmail?.clientSecret && (
+          <div className="mt-4 p-3 bg-blue-50 border border-blue-100 rounded-xl flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-blue-800">Autorización OAuth directa</p>
+              <p className="text-xs text-blue-600 mt-0.5">
+                Genera un refresh token permanente sin pasar por OAuth Playground.
+                El token se guarda automáticamente en la base de datos.
+              </p>
+            </div>
+            <a
+              href="/api/auth/gmail"
+              className="flex-shrink-0 ml-4 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 whitespace-nowrap"
+            >
+              Conectar Gmail →
+            </a>
+          </div>
+        )}
       </Section>
 
       {/* Google Drive */}
@@ -250,9 +272,27 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
         >
           {testing ? 'Ejecutando...' : 'Ejecutar manualmente ahora'}
         </button>
-        {testResult && (
+        {testResult === 'NEEDS_REAUTH' ? (
+          <div className="mt-3 p-4 bg-red-50 border border-red-200 rounded-xl">
+            <div className="flex items-start gap-3">
+              <span className="text-xl flex-shrink-0">🔑</span>
+              <div>
+                <p className="text-sm font-semibold text-red-800">Token de Gmail expirado</p>
+                <p className="text-xs text-red-600 mt-1">
+                  El refresh token ya no es válido (<code>invalid_grant</code>). Debes re-autorizar la conexión con Gmail.
+                </p>
+                <a
+                  href="/api/auth/gmail"
+                  className="inline-block mt-3 px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700"
+                >
+                  Re-conectar Gmail →
+                </a>
+              </div>
+            </div>
+          </div>
+        ) : testResult ? (
           <pre className="mt-2 p-3 bg-gray-900 text-green-400 text-xs rounded-lg overflow-x-auto">{testResult}</pre>
-        )}
+        ) : null}
       </Section>
 
       {/* Save button */}
