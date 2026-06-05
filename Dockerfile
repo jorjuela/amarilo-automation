@@ -1,7 +1,22 @@
 FROM node:20-slim
 
-# Prisma query engine requires OpenSSL at runtime
-RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
+# System deps: OpenSSL for Prisma + Playwright/Chromium dependencies
+RUN apt-get update -y && apt-get install -y \
+    openssl \
+    libgtk-3-0 \
+    libasound2 \
+    libxdamage1 \
+    libgbm1 \
+    libxkbcommon0 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libxcomposite1 \
+    libxrandr2 \
+    libxi6 \
+    libxtst6 \
+    fonts-liberation \
+    libx11-xcb1 \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -10,17 +25,17 @@ COPY prisma ./prisma/
 COPY package*.json ./
 RUN npm ci
 
+# Install Playwright Chromium browser (used for HTML→PNG export)
+RUN npx playwright install chromium
+
 COPY . .
 RUN npm run build
 
 # Copy schema to /app/schema/ — a path the Railway volume never mounts.
-# The volume is mounted at /app/prisma/ and would overwrite schema.prisma
-# there at runtime, so we keep a build-time copy outside that path.
 RUN mkdir -p /app/schema && cp /app/prisma/schema.prisma /app/schema/schema.prisma
 
 ENV NODE_ENV=production
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 EXPOSE 3000
 
-# Railway overrides CMD with npm start, so the start script does the work.
-# DATABASE_URL points to /app/prisma/prod.db which lives inside the volume.
 CMD ["npm", "start"]

@@ -159,6 +159,10 @@ function PieceCard({ piece, selected, onToggle, livePrice, liveSmmlv, onEdit, on
 
       {/* Actions */}
       <div className="absolute top-2 right-2 z-20 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <a href={`/dashboard/cambio-precio/editor/${piece.id}`}
+          onClick={(e) => e.stopPropagation()}
+          className="w-6 h-6 bg-white rounded shadow text-xs flex items-center justify-center hover:bg-purple-50 text-purple-600"
+          title="Editar en HTML">🖊</a>
         <button onClick={(e) => { e.stopPropagation(); onEdit() }} className="w-6 h-6 bg-white rounded shadow text-xs flex items-center justify-center hover:bg-blue-50">✏️</button>
         <button onClick={(e) => { e.stopPropagation(); onDelete() }} className="w-6 h-6 bg-white rounded shadow text-xs flex items-center justify-center hover:bg-red-50">🗑</button>
       </div>
