@@ -4,14 +4,15 @@ import { getSession } from '@/lib/auth'
 import { notFound, redirect } from 'next/navigation'
 import { formatDate, formatCurrency } from '@/lib/utils'
 import type { Stage } from '@/types'
-import type { CampaignDetail } from '@/lib/ai/project-extractor'
+import type { CampaignDetail, ProjectBlocks } from '@/lib/ai/project-extractor'
 import CreateSheetButton from '@/components/projects/CreateSheetButton'
 import GenerateJiraButton from '@/components/projects/GenerateJiraButton'
 import AutoAssignPanel from '@/components/projects/AutoAssignPanel'
 import ProjectTabs from '@/components/projects/ProjectTabs'
+import ProjectBlocksView from '@/components/projects/ProjectBlocksView'
 import Link from 'next/link'
 
-const TABS = ['overview', 'campaign', 'traffic', 'jira'] as const
+const TABS = ['overview', 'description', 'campaign', 'traffic', 'jira'] as const
 type Tab = typeof TABS[number]
 
 export default async function ProjectDetailPage({
@@ -51,10 +52,14 @@ export default async function ProjectDetailPage({
   const totalBudget = project.torres.reduce((s, t) => s + t.budget, 0)
   const totalLeads  = project.torres.reduce((s, t) => s + t.leadGoal, 0)
 
-  // Parse campaign data
   let campaign: CampaignDetail | null = null
   if (project.briefData) {
     try { campaign = JSON.parse(project.briefData) } catch { /* ignore */ }
+  }
+
+  let briefBlocks: ProjectBlocks | null = null
+  if ((project as { briefBlocks?: string }).briefBlocks) {
+    try { briefBlocks = JSON.parse((project as { briefBlocks?: string }).briefBlocks!) } catch { /* ignore */ }
   }
 
   // Group jira by epic
@@ -125,8 +130,10 @@ export default async function ProjectDetailPage({
         ))}
       </div>
 
-      {/* Tabs — 4 tabs now including Campaña */}
-      <ProjectTabs projectId={id} activeTab={tab} extraTabs={[{ key: 'campaign', label: '📣 Campaña' }]} />
+      <ProjectTabs projectId={id} activeTab={tab} extraTabs={[
+        { key: 'description', label: '📝 Descripción' },
+        { key: 'campaign',    label: '📣 Campaña'     },
+      ]} />
 
       <div className="mt-6">
 
@@ -190,6 +197,15 @@ export default async function ProjectDetailPage({
               <AutoAssignPanel projectId={project.id} hasBrief={!!project.briefRawText && project.briefRawText.length > 100} />
             </div>
           </div>
+        )}
+
+        {/* ── DESCRIPCIÓN ── */}
+        {tab === 'description' && (
+          <ProjectBlocksView
+            projectId={project.id}
+            briefBlocks={briefBlocks}
+            hasBriefText={(project.briefRawText?.length ?? 0) > 100}
+          />
         )}
 
         {/* ── CAMPAÑA ── */}

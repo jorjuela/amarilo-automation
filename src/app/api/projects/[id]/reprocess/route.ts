@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getSessionFromRequest } from '@/lib/auth'
-import { extractProject } from '@/lib/ai/project-extractor'
+import { extractProject, generateProjectBlocks } from '@/lib/ai/project-extractor'
 import type { TextSource } from '@/lib/ai/project-extractor'
 
 // Re-runs the AI extraction pipeline on a project's stored brief text
@@ -47,6 +47,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       '',
     )
 
+    // Generate blocks concurrently with nothing else to wait for
+    const briefBlocks = await generateProjectBlocks(rawText, project.emailSubject || '')
+
     // Update project with fresh extraction
     await prisma.project.update({
       where: { id },
@@ -58,6 +61,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         stage: extracted.stage,
         monthYear: extracted.monthYear || project.monthYear,
         briefData: JSON.stringify(extracted.campaign),
+        briefBlocks: briefBlocks ? JSON.stringify(briefBlocks) : undefined,
         parseSource: extracted.parseSource,
         parseConfidence: extracted.confidence,
         needsReview: extracted.confidence === 'low',

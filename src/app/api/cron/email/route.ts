@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { fetchUnprocessedBriefEmails, markEmailAsRead } from '@/lib/email/monitor'
-import { extractProject } from '@/lib/ai/project-extractor'
+import { extractProject, generateProjectBlocks } from '@/lib/ai/project-extractor'
 import type { TextSource } from '@/lib/ai/project-extractor'
 import { generateJiraStructuresForProject } from '@/lib/jira/generator'
 import type { Project, TorreData } from '@/types'
@@ -87,36 +87,39 @@ export async function GET(req: Request) {
           continue
         }
 
-        // ── Build text sources from ALL attachments + body ──────────────────
+        // ── Build text sources: PDFs + full thread text ─────────────────────
         const sources: TextSource[] = []
 
-        // Parse each PDF attachment
         for (const att of email.pdfAttachments ?? []) {
           const text = await parsePdfText(att.buffer)
-          if (text.trim().length > 30) {
-            sources.push({ filename: att.filename, text })
-          }
+          if (text.trim().length > 30) sources.push({ filename: att.filename, text })
         }
 
-        // Email body as additional source
-        const bodyText = email.bodyText?.trim() ?? ''
-        if (bodyText.length > 50) {
-          sources.push({ filename: 'email-body.txt', text: bodyText, isBody: true })
+        // Use full thread text (all messages in chain) as body source
+        const threadText = email.threadText?.trim() ?? email.bodyText?.trim() ?? ''
+        if (threadText.length > 50) {
+          sources.push({ filename: 'email-thread.txt', text: threadText, isBody: true })
         }
 
         if (sources.length === 0) {
           await prisma.emailLog.update({
             where: { messageId: email.messageId },
-            data: { error: 'No parseable content found (no PDFs and no body text)' },
+            data: { error: 'No parseable content found' },
           })
           continue
         }
 
-        // ── Extract project + campaign data ─────────────────────────────────
-        const extracted = await extractProject(sources, email.subject, email.from)
+        // Combined text for AI (PDFs + thread)
+        const combinedRaw = [
+          threadText ? `=== CADENA DE EMAIL (${email.threadMessageCount} mensajes) ===\n${threadText}` : '',
+          ...sources.filter((s) => !s.isBody).map((s) => `=== ADJUNTO: ${s.filename} ===\n${s.text}`),
+        ].filter(Boolean).join('\n\n')
 
-        // Combined raw text for search/AI later
-        const combinedRaw = sources.map((s) => `=== ${s.filename} ===\n${s.text}`).join('\n\n')
+        // ── Extract project + campaign + blocks (all concurrently) ───────────
+        const [extracted, briefBlocks] = await Promise.all([
+          extractProject(sources, email.subject, email.from),
+          generateProjectBlocks(combinedRaw, email.subject),
+        ])
 
         // Duplicate check by name + city
         if (extracted.projectName && extracted.city) {
@@ -124,7 +127,6 @@ export async function GET(req: Request) {
             where: { name: extracted.projectName, city: extracted.city },
           })
           if (nameDup) {
-            // Update with fresher data if this brief has more text
             const shouldUpdate = combinedRaw.length > (nameDup.briefRawText?.length ?? 0)
             if (shouldUpdate) {
               await prisma.project.update({
@@ -132,7 +134,9 @@ export async function GET(req: Request) {
                 data: {
                   briefRawText: combinedRaw,
                   briefData: JSON.stringify(extracted.campaign),
+                  briefBlocks: briefBlocks ? JSON.stringify(briefBlocks) : undefined,
                   briefParsedAt: new Date(),
+                  emailThreadId: email.threadId,
                   emailMessageId: email.messageId,
                   emailReceivedAt: email.receivedAt,
                 },
@@ -158,12 +162,14 @@ export async function GET(req: Request) {
             briefParsedAt: new Date(),
             briefRawText: combinedRaw,
             briefData: JSON.stringify(extracted.campaign),
+            briefBlocks: briefBlocks ? JSON.stringify(briefBlocks) : undefined,
             parseSource: extracted.parseSource,
             parseConfidence: extracted.confidence,
             needsReview: extracted.confidence === 'low',
             emailSubject: email.subject,
             emailReceivedAt: email.receivedAt,
             emailMessageId: email.messageId,
+            emailThreadId: email.threadId,
             torres: {
               create: extracted.torres.map((t) => ({
                 name: t.name,

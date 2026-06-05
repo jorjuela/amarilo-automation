@@ -336,3 +336,132 @@ export async function extractProject(
     missingFields: ['type', 'stage', 'torres', 'monthYear'],
   }
 }
+
+// ─── Project Blocks ───────────────────────────────────────────────────────────
+
+export interface ProjectBlock {
+  id: string
+  icon: string
+  title: string
+  content: string        // free-form paragraph
+  bullets?: string[]     // optional bullet list
+  table?: { label: string; value: string }[]  // optional key-value pairs
+}
+
+export interface ProjectBlocks {
+  blocks: ProjectBlock[]
+  emailChainSummary: string   // short summary of the full email thread
+  generatedAt: string         // ISO date
+}
+
+const BLOCKS_PROMPT = `Eres experto en marketing digital y proyectos inmobiliarios de Amarilo Colombia.
+Analiza TODA la cadena de email (puede incluir varios mensajes, respuestas y reenvíos) y genera una descripción estructurada del proyecto de campaña.
+
+Responde SOLO con JSON válido con esta estructura:
+{
+  "emailChainSummary": "Resumen en 2-3 oraciones de toda la cadena de emails",
+  "blocks": [
+    {
+      "id": "context",
+      "icon": "🏗",
+      "title": "Contexto del Proyecto",
+      "content": "Descripción detallada del proyecto inmobiliario...",
+      "bullets": [],
+      "table": [{"label":"Ciudad","value":"Bogotá"},{"label":"Tipo","value":"NO VIS"}]
+    },
+    {
+      "id": "objective",
+      "icon": "🎯",
+      "title": "Objetivo de Campaña",
+      "content": "Descripción del objetivo principal...",
+      "bullets": ["objetivo 1", "objetivo 2"]
+    },
+    {
+      "id": "audience",
+      "icon": "👥",
+      "title": "Audiencia Objetivo",
+      "content": "Descripción detallada de la audiencia...",
+      "table": [{"label":"Edad","value":"28-45 años"},{"label":"Motivación","value":"Habitar"}]
+    },
+    {
+      "id": "strategy",
+      "icon": "📡",
+      "title": "Estrategia de Medios",
+      "content": "Descripción de la estrategia de pauta...",
+      "bullets": ["Meta: descripción del uso","PMAX: descripción del uso"]
+    },
+    {
+      "id": "messages",
+      "icon": "💡",
+      "title": "Mensajes Clave",
+      "content": "Propuesta de valor y mensajes principales...",
+      "bullets": ["RTB 1", "RTB 2", "RTB 3"]
+    },
+    {
+      "id": "guidelines",
+      "icon": "✅",
+      "title": "Lineamientos Creativos",
+      "content": "Guía de estilo y tono...",
+      "bullets": ["✅ Sí: lineamiento 1", "❌ No: restricción 1"]
+    },
+    {
+      "id": "timeline",
+      "icon": "🗓",
+      "title": "Fases y Timeline",
+      "content": "Descripción del calendario de campaña...",
+      "bullets": ["Fase 1: descripción con fechas", "Fase 2: descripción con fechas"]
+    },
+    {
+      "id": "kpis",
+      "icon": "📊",
+      "title": "KPIs y Metas",
+      "content": "Métricas de éxito esperadas...",
+      "table": [{"label":"Meta leads/mes","value":"150"},{"label":"Presupuesto","value":"$50M"}]
+    }
+  ]
+}
+
+Reglas:
+- Genera SOLO los bloques para los que tienes información real en el contenido
+- content debe ser un párrafo fluido (2-4 oraciones)
+- bullets: lista con bullet points concretos del contenido
+- table: datos clave en formato etiqueta-valor
+- Si no hay info para un bloque, no lo incluyas
+- Usa el contexto de TODA la cadena de email, no solo el último mensaje`
+
+export async function generateProjectBlocks(
+  combinedText: string,
+  emailSubject: string,
+): Promise<ProjectBlocks | null> {
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey || combinedText.trim().length < 50) return null
+
+  try {
+    const genAI = new GoogleGenerativeAI(apiKey)
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
+
+    const result = await model.generateContent(
+      `${BLOCKS_PROMPT}\n\nAsunto: ${emailSubject}\n\nCONTENIDO:\n${combinedText.slice(0, 16000)}`
+    )
+
+    const raw = result.response.text().trim()
+    const m   = raw.match(/```(?:json)?\s*([\s\S]*?)```/) || raw.match(/(\{[\s\S]*\})/)
+    const parsed = JSON.parse(m ? m[1] : raw)
+
+    return {
+      blocks: (parsed.blocks || []).map((b: Partial<ProjectBlock>) => ({
+        id:      String(b.id || 'block'),
+        icon:    String(b.icon || '📌'),
+        title:   String(b.title || ''),
+        content: String(b.content || ''),
+        bullets: Array.isArray(b.bullets) ? b.bullets.map(String) : undefined,
+        table:   Array.isArray(b.table) ? b.table.map((r: { label?: unknown; value?: unknown }) => ({ label: String(r.label || ''), value: String(r.value || '') })) : undefined,
+      })),
+      emailChainSummary: String(parsed.emailChainSummary || ''),
+      generatedAt: new Date().toISOString(),
+    }
+  } catch (err) {
+    console.error('Project blocks generation failed:', err)
+    return null
+  }
+}

@@ -36,6 +36,8 @@ export interface Project {
   briefParsedAt?: string | Date | null
   briefRawText?: string | null
   briefData?: string | null        // JSON: CampaignDetail
+  briefBlocks?: string | null      // JSON: ProjectBlocks
+  emailThreadId?: string | null
   parseSource?: string | null      // AI | REGEX | SUBJECT
   parseConfidence?: string | null  // high | medium | low
   needsReview?: boolean
