@@ -53,8 +53,8 @@ export default async function ProjectDetailPage({
 
   // Parse campaign data
   let campaign: CampaignDetail | null = null
-  if ((project as { briefData?: string }).briefData) {
-    try { campaign = JSON.parse((project as { briefData?: string }).briefData!) } catch { /* ignore */ }
+  if (project.briefData) {
+    try { campaign = JSON.parse(project.briefData) } catch { /* ignore */ }
   }
 
   // Group jira by epic
@@ -74,8 +74,6 @@ export default async function ProjectDetailPage({
   const STATUS_LABELS: Record<string, string> = { pending: 'Pendiente', in_progress: 'En progreso', review: 'En revisión', done: 'Entregado' }
   const STATUS_COLORS: Record<string, string> = { pending: 'bg-gray-100 text-gray-600', in_progress: 'bg-blue-100 text-blue-700', review: 'bg-yellow-100 text-yellow-700', done: 'bg-green-100 text-green-700' }
 
-  const p = project as typeof project & { needsReview?: boolean; parseSource?: string; parseConfidence?: string }
-
   return (
     <div className="p-6 max-w-6xl">
       <Link href="/dashboard/projects" className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1 mb-4">← Proyectos</Link>
@@ -87,7 +85,7 @@ export default async function ProjectDetailPage({
             <h1 className="text-2xl font-bold text-gray-900">{project.name}</h1>
             <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${stageColors[stage] ?? 'bg-gray-100 text-gray-600'}`}>{stage}</span>
             <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-700 border border-gray-200">{project.type}</span>
-            {p.parseSource === 'AI' && <span className="px-2 py-0.5 rounded-full text-xs bg-purple-100 text-purple-700 border border-purple-200">🤖 IA</span>}
+            {project.parseSource === 'AI' && <span className="px-2 py-0.5 rounded-full text-xs bg-purple-100 text-purple-700 border border-purple-200">🤖 IA</span>}
           </div>
           <p className="text-gray-500 text-sm">{project.city} · {project.monthYear || 'Sin fecha'} · {formatDate(project.createdAt)}</p>
         </div>
@@ -98,16 +96,16 @@ export default async function ProjectDetailPage({
       </div>
 
       {/* Review banner */}
-      {p.needsReview && (
+      {project.needsReview && (
         <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
           <span className="text-xl">⚠️</span>
           <div>
             <p className="text-sm font-semibold text-amber-800">Requiere revisión manual</p>
             <p className="text-xs text-amber-600 mt-0.5">
-              {p.parseSource === 'SUBJECT' ? 'Solo se leyó el asunto del email.' : 'El parser tuvo baja confianza.'}
+              {project.parseSource === 'SUBJECT' ? 'Solo se leyó el asunto del email.' : 'El parser tuvo baja confianza.'}
               {' '}Verifica nombre, ciudad, tipo y etapa.
             </p>
-            <p className="text-xs text-amber-500 mt-0.5">Fuente: <strong>{p.parseSource}</strong> · Confianza: <strong>{p.parseConfidence}</strong></p>
+            <p className="text-xs text-amber-500 mt-0.5">Fuente: <strong>{project.parseSource}</strong> · Confianza: <strong>{project.parseConfidence}</strong></p>
           </div>
         </div>
       )}

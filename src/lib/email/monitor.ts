@@ -1,6 +1,4 @@
 import { google } from 'googleapis'
-import { parseBriefText, parseFilename } from '@/lib/brief/parser'
-import type { ParsedBrief } from '@/types'
 
 // Subject patterns — not anchored to start, handles RE:/FWD:/Fwd: prefixes
 const SUBJECT_PATTERNS = [
@@ -27,7 +25,6 @@ export interface EmailBrief {
   pdfAttachments: PdfAttachment[]  // ALL pdf attachments
   bodyText?: string
   bodyHtml?: string
-  parsedBrief?: ParsedBrief
 }
 
 export function createGmailClient(credentials: {
@@ -183,42 +180,6 @@ function stripHtml(html: string): string {
     .trim()
 }
 
-export async function parsePdfBuffer(buffer: Buffer): Promise<string> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const pdfParse: any = (await import('pdf-parse'))
-  const fn = pdfParse.default || pdfParse
-  const data = await fn(buffer)
-  return data.text
-}
-
-export async function processEmailBrief(email: EmailBrief): Promise<{ brief: ParsedBrief; rawText: string } | null> {
-  // Prefer PDF attachment, fall back to email body text
-  let rawText = ''
-
-  if (email.pdfBuffer && email.attachmentName) {
-    try {
-      rawText = await parsePdfBuffer(email.pdfBuffer)
-    } catch (err) {
-      console.error('PDF parse error:', err)
-    }
-  }
-
-  // If PDF parsing yielded nothing, use email body
-  if (rawText.trim().length < 100 && email.bodyText && email.bodyText.trim().length > 50) {
-    rawText = email.bodyText
-  }
-
-  if (!rawText.trim()) return null
-
-  try {
-    const filename = email.attachmentName || `email-${email.messageId}.txt`
-    const brief = parseBriefText(rawText, filename, email.subject)
-    return { brief, rawText }
-  } catch (err) {
-    console.error('Brief parse error:', err)
-    return null
-  }
-}
 
 export async function markEmailAsRead(
   credentials: { clientId: string; clientSecret: string; refreshToken: string },
