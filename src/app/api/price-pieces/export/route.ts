@@ -8,12 +8,18 @@ export async function POST(req: NextRequest) {
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   try {
-    const { html, width = 540, height = 960, filename = 'pieza.png' } = await req.json()
+    const {
+      html,
+      width    = 540,
+      height   = 960,
+      filename = 'pieza.png',
+      format   = 'png',   // 'png' | 'jpeg'
+      quality  = 92,      // for jpeg
+    } = await req.json()
 
     if (!html) return NextResponse.json({ error: 'HTML requerido' }, { status: 400 })
 
     const { chromium } = await import('playwright')
-
     const browser = await chromium.launch({
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     })
@@ -21,19 +27,20 @@ export async function POST(req: NextRequest) {
     try {
       const page = await browser.newPage()
       await page.setViewportSize({ width, height })
-      await page.setContent(html, { waitUntil: 'networkidle', timeout: 15000 })
+      await page.setContent(html, { waitUntil: 'networkidle', timeout: 20000 })
+      await page.waitForTimeout(1000)   // wait for fonts / base64 images
 
-      // Wait for fonts and images to load
-      await page.waitForTimeout(800)
-
+      const imgFormat = format === 'jpeg' ? 'jpeg' : 'png'
       const screenshot = await page.screenshot({
-        type: 'png',
+        type: imgFormat,
+        ...(imgFormat === 'jpeg' ? { quality } : {}),
         clip: { x: 0, y: 0, width, height },
       })
 
+      const mimeType = imgFormat === 'jpeg' ? 'image/jpeg' : 'image/png'
       return new NextResponse(screenshot as unknown as BodyInit, {
         headers: {
-          'Content-Type': 'image/png',
+          'Content-Type': mimeType,
           'Content-Disposition': `attachment; filename="${filename}"`,
           'Content-Length': String(screenshot.length),
         },
