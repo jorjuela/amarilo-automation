@@ -10,6 +10,7 @@ import GenerateJiraButton from '@/components/projects/GenerateJiraButton'
 import AutoAssignPanel from '@/components/projects/AutoAssignPanel'
 import ProjectTabs from '@/components/projects/ProjectTabs'
 import ProjectBlocksView from '@/components/projects/ProjectBlocksView'
+import ProjectEditHeader from '@/components/projects/ProjectEditHeader'
 import Link from 'next/link'
 
 const TABS = ['overview', 'description', 'campaign', 'traffic', 'jira'] as const
@@ -124,6 +125,15 @@ export default async function ProjectDetailPage({
           </p>
         </div>
         <div className="flex gap-2 flex-shrink-0">
+          <ProjectEditHeader
+            projectId={project.id}
+            name={project.name}
+            macroProject={project.macroProject}
+            city={project.city}
+            type={project.type}
+            stage={project.stage}
+            monthYear={project.monthYear}
+          />
           <CreateSheetButton projectId={project.id} hasSheet={!!project.googleSheetUrl} sheetUrl={project.googleSheetUrl} />
           <GenerateJiraButton projectId={project.id} />
         </div>

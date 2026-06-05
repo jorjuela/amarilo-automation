@@ -41,8 +41,29 @@ model Project {
   torres         Torre[]
   trafficEntries TrafficEntry[]
   jiraStructures JiraStructure[]
+  pricePieces    PricePiece[]
 
   @@map("projects")
+}
+
+model PricePiece {
+  id           String   @id @default(cuid())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  name         String           // "KV 9x16", "Story 1:1", etc.
+  format       String           // "9x16" | "1x1" | "4x5" | "16x9"
+  currentPrice String  @default("")
+  priceSMMLV   String  @default("")  // "135 SMMLV"
+  areas        String  @default("")  // "44m²"
+  tagline      String  @default("")  // "Tu mejor inversión al norte de..."
+  bgImageBase64 String?              // base64 or URL of background image
+  active       Boolean @default(true)
+
+  projectId    String
+  project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("price_pieces")
 }
 
 model Torre {
