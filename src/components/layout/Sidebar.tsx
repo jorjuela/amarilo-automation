@@ -9,7 +9,8 @@ const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: '⊞' },
   { href: '/dashboard/projects', label: 'Proyectos', icon: '🏗' },
   { href: '/dashboard/traffic', label: 'Tráfico Interno', icon: '📋' },
-  { href: '/dashboard/cambio-precio', label: 'Cambio de Precio', icon: '🎨' },
+  { href: '/dashboard/cambio-precio',  label: 'Cambio de Precio', icon: '🎨' },
+  { href: '/dashboard/image-editor',   label: 'Editor de Imágenes', icon: '🖼' },
   { href: '/dashboard/jira', label: 'Estructura Jira', icon: '⚡' },
   { href: '/dashboard/settings', label: 'Configuración', icon: '⚙' },
 ]
