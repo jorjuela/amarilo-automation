@@ -8,7 +8,10 @@ import ProjectsClient from '@/components/projects/ProjectsClient'
 async function getProjects() {
   try {
     return await prisma.project.findMany({
-      include: { torres: { select: { id: true, name: true, leadGoal: true, budget: true } } },
+      include: {
+        torres: { select: { id: true, name: true, leadGoal: true, budget: true } },
+        trafficEntries: { select: { id: true, status: true, requirement: true, dayOfWeek: true, weekLabel: true, copyName: true, graphicName: true } },
+      },
       orderBy: { createdAt: 'desc' },
     })
   } catch {
@@ -22,7 +25,6 @@ export default async function ProjectsPage() {
 
   const raw = await getProjects()
 
-  // Serialize for the client component
   const projects = raw.map((p) => ({
     id: p.id,
     name: p.name,
@@ -34,9 +36,21 @@ export default async function ProjectsPage() {
     monthYear: p.monthYear,
     createdAt: p.createdAt.toISOString(),
     googleSheetUrl: p.googleSheetUrl,
-    needsReview: (p as { needsReview?: boolean }).needsReview ?? false,
-    parseSource: (p as { parseSource?: string }).parseSource ?? null,
+    needsReview: p.needsReview ?? false,
+    parseSource: p.parseSource ?? null,
+    briefData: p.briefData ?? null,
+    hasBriefText: (p.briefRawText?.length ?? 0) > 100,
+    emailMessageId: p.emailMessageId ?? null,
     torres: p.torres,
+    tasks: p.trafficEntries.map((t) => ({
+      id: t.id,
+      status: t.status,
+      requirement: t.requirement,
+      dayOfWeek: t.dayOfWeek,
+      weekLabel: t.weekLabel,
+      copyName: t.copyName,
+      graphicName: t.graphicName,
+    })),
   }))
 
   return (
