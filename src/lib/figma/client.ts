@@ -146,6 +146,9 @@ function looksLikePrice(text: string): boolean {
 // Also enters GROUP/FRAME nodes whose layer name matches "precio" to capture
 // compound price components (e.g. a group named "precio" containing text).
 
+// Walks the entire node tree searching for TEXT nodes whose layer name matches
+// the configured price layer name (or variants), or whose text content looks
+// like a price. Always recurses fully regardless of parent node name.
 function walkForPriceNodes(
   node: FigmaNode,
   frameBounds: FigmaBounds,
@@ -168,28 +171,13 @@ function walkForPriceNodes(
         style: node.style || { fontFamily: 'Inter', fontWeight: 700, fontSize: 24 },
         color: fill?.color || { r: 1, g: 1, b: 1, a: 1 },
       })
-      return results // found it — no need to walk children of a TEXT node
     }
   }
 
+  // Always recurse into all children — price TEXT node can be at any depth
   if (node.children) {
-    // If this GROUP/FRAME is named "precio" (or configured name), collect ALL its text children
-    const isNamedPrice = isPriceLayerName(node.name || '', configuredPriceLayerName)
     for (const child of node.children) {
-      if (isNamedPrice && child.type === 'TEXT') {
-        const bounds = child.absoluteBoundingBox || { x: 0, y: 0, width: 100, height: 20 }
-        const fill = child.fills?.find((f) => f.type === 'SOLID' && f.color)
-        results.push({
-          id: child.id,
-          name: child.name,
-          text: child.characters || '',
-          bounds,
-          style: child.style || { fontFamily: 'Inter', fontWeight: 700, fontSize: 24 },
-          color: fill?.color || { r: 1, g: 1, b: 1, a: 1 },
-        })
-      } else {
-        results.push(...walkForPriceNodes(child, frameBounds, configuredPriceLayerName))
-      }
+      results.push(...walkForPriceNodes(child, frameBounds, configuredPriceLayerName))
     }
   }
 
