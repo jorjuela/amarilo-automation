@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import type { DetectedFrame, PriceNode } from '@/lib/figma/client'
+import type { DetectedFrame } from '@/lib/figma/client'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -18,8 +18,14 @@ interface PriceElement {
   color: string      // CSS rgba
 }
 
+// DetectedFrame enriched by the hybrid MCP+REST endpoint
+interface EnrichedFrame extends DetectedFrame {
+  mcpPriceHints?: string[]      // price text strings found by Figma MCP
+  mcpHasPriceHints?: boolean
+}
+
 interface FrameItem {
-  frame: DetectedFrame
+  frame: EnrichedFrame
   imageBase64: string | null
   priceElements: PriceElement[]
   status: 'idle' | 'exporting' | 'detecting' | 'ready' | 'rendering' | 'done' | 'error'
@@ -35,6 +41,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
   const [fileUrl, setFileUrl] = useState('')
   const [fileKey, setFileKey] = useState('')
   const [fileName, setFileName] = useState('')
+  const [mcpAvailable, setMcpAvailable] = useState(false)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
   const [frames, setFrames] = useState<FrameItem[]>([])
@@ -44,7 +51,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
 
   const activeFrame = frames.find((f) => f.frame.id === activeFrameId) || null
 
-  // ── Load Figma file ───────────────────────────────────────────────────────
+  // ── Load Figma file (hybrid: MCP enriched + REST coordinates) ────────────
 
   async function handleLoadFile() {
     if (!fileUrl.trim()) return
@@ -52,6 +59,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     setLoadError('')
     setFrames([])
     setActiveFrameId(null)
+    setMcpAvailable(false)
 
     try {
       const res = await fetch(`/api/figma?fileUrl=${encodeURIComponent(fileUrl)}`)
@@ -60,18 +68,20 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
 
       setFileKey(data.fileKey)
       setFileName(data.fileName)
+      setMcpAvailable(!!data.mcpAvailable)
 
-      const items: FrameItem[] = (data.frames as DetectedFrame[]).map((f) => ({
+      const items: FrameItem[] = (data.frames as EnrichedFrame[]).map((f) => ({
         frame: f,
         imageBase64: null,
         priceElements: [],
         status: 'idle',
         newPrice: '',
-        selected: f.priceNodes.length > 0,
+        // Pre-select frames that have REST price nodes OR MCP price hints
+        selected: f.priceNodes.length > 0 || (f.mcpHasPriceHints ?? false),
       }))
       setFrames(items)
 
-      const first = items.find((i) => i.frame.priceNodes.length > 0)
+      const first = items.find((i) => i.frame.priceNodes.length > 0 || i.frame.mcpHasPriceHints)
       if (first) setActiveFrameId(first.frame.id)
     } catch (err) {
       setLoadError(String(err))
@@ -89,7 +99,10 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     setFrames((prev) => prev.map((f) => ({ ...f, selected: true })))
   }
   function selectWithPrices() {
-    setFrames((prev) => prev.map((f) => ({ ...f, selected: f.frame.priceNodes.length > 0 })))
+    setFrames((prev) => prev.map((f) => ({
+      ...f,
+      selected: f.frame.priceNodes.length > 0 || (f.frame.mcpHasPriceHints ?? false),
+    })))
   }
 
   // ── Export + detect for selected frames ──────────────────────────────────
@@ -288,14 +301,25 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
         </div>
         {loadError && <p className="text-red-600 text-xs mt-2">{loadError}</p>}
         {fileName && (
-          <p className="text-green-700 text-xs mt-2 font-medium">
-            ✓ {fileName} — {frames.length} frames encontrados
-            {frames.filter((f) => f.frame.priceNodes.length > 0).length > 0 && (
-              <span className="ml-2 text-amber-600">
-                ({frames.filter((f) => f.frame.priceNodes.length > 0).length} con precios detectados)
+          <div className="mt-2 flex items-center gap-3 flex-wrap">
+            <p className="text-green-700 text-xs font-medium">
+              ✓ {fileName} — {frames.length} frames
+              {frames.filter((f) => f.frame.priceNodes.length > 0 || f.frame.mcpHasPriceHints).length > 0 && (
+                <span className="ml-1 text-amber-600">
+                  ({frames.filter((f) => f.frame.priceNodes.length > 0 || f.frame.mcpHasPriceHints).length} con precios)
+                </span>
+              )}
+            </p>
+            {mcpAvailable ? (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 font-semibold">
+                Figma MCP activo
+              </span>
+            ) : (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
+                solo REST
               </span>
             )}
-          </p>
+          </div>
         )}
       </div>
 
@@ -437,13 +461,21 @@ function FrameCard({
         <div className="flex-1 min-w-0">
           <p className="text-xs font-semibold text-gray-800 truncate">{item.frame.name}</p>
           <p className="text-xs text-gray-400 truncate">{item.frame.pageName}</p>
-          <div className="flex items-center gap-2 mt-1">
+          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
             <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${STATUS_COLOR[item.status]}`}>
               {STATUS_LABEL[item.status]}
             </span>
             {item.frame.priceNodes.length > 0 && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">
-                {item.frame.priceNodes.length} precio{item.frame.priceNodes.length !== 1 ? 's' : ''}
+                {item.frame.priceNodes.length}px
+              </span>
+            )}
+            {item.frame.mcpHasPriceHints && (
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-medium"
+                title={`MCP detectó: ${item.frame.mcpPriceHints?.join(', ')}`}
+              >
+                MCP
               </span>
             )}
           </div>
