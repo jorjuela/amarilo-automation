@@ -9,6 +9,7 @@ export async function GET() {
     // Mask sensitive fields
     if (data.gmail?.refreshToken) data.gmail.refreshToken = '***masked***'
     if (data.googleDrive?.privateKey) data.googleDrive.privateKey = '***masked***'
+    if (data.figma?.token) data.figma.token = '***masked***'
     return NextResponse.json(data)
   } catch (error) {
     return NextResponse.json({ error: 'Failed to fetch settings' }, { status: 500 })

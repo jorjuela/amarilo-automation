@@ -45,7 +45,7 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
       // Reload settings to show the saved email
       fetch('/api/settings').then(r => r.json()).then(data => {
         if (data.gmail?.email) {
-          setSettings(prev => ({ ...prev, gmail: { ...prev.gmail, email: data.gmail.email, refreshToken: '***saved***' } }))
+          setSettings(prev => ({ ...prev, gmail: { ...prev.gmail, email: data.gmail.email, refreshToken: '***masked***' } }))
         }
       })
       // Clean up URL
@@ -187,10 +187,10 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
           />
           <Field
             label="Refresh Token"
-            value={settings.gmail?.refreshToken === '***saved***' ? '' : (settings.gmail?.refreshToken || '')}
+            value={settings.gmail?.refreshToken === '***masked***' ? '' : (settings.gmail?.refreshToken || '')}
             onChange={(v) => update('gmail', 'refreshToken', v)}
             type="password"
-            placeholder={settings.gmail?.refreshToken === '***saved***' ? '✓ Token guardado' : 'Pega aquí el refresh token'}
+            placeholder={settings.gmail?.refreshToken === '***masked***' ? '✓ Token guardado' : 'Pega aquí el refresh token'}
           />
         </div>
 
@@ -259,7 +259,7 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
               value={settings.googleDrive?.privateKey || ''}
               onChange={(e) => update('googleDrive', 'privateKey', e.target.value)}
               rows={3}
-              placeholder={settings.googleDrive?.privateKey === '***saved***' ? '***saved***' : '-----BEGIN RSA PRIVATE KEY-----\n...'}
+              placeholder={settings.googleDrive?.privateKey === '***masked***' ? '✓ Clave guardada' : '-----BEGIN RSA PRIVATE KEY-----\n...'}
               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-blue-400 resize-none"
             />
           </div>
@@ -379,12 +379,12 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
       >
         <Field
           label="Personal Access Token"
-          value={settings.figma?.token === '***saved***' ? '' : (settings.figma?.token || '')}
+          value={settings.figma?.token === '***masked***' ? '' : (settings.figma?.token || '')}
           onChange={(v) => update('figma', 'token', v)}
           type="password"
-          placeholder={settings.figma?.token === '***saved***' ? '✓ Token guardado' : 'figd_XXXXXXXX...'}
+          placeholder={settings.figma?.token === '***masked***' ? '✓ Token guardado' : 'figd_XXXXXXXX...'}
         />
-        {settings.figma?.token && settings.figma.token !== '***saved***' && (
+        {settings.figma?.token && settings.figma.token !== '***masked***' && (
           <p className="text-xs text-green-600 mt-2">✓ Token configurado</p>
         )}
         <p className="text-xs text-gray-400 mt-2">

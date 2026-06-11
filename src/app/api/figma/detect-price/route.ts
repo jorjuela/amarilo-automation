@@ -1,92 +1,112 @@
 // POST /api/figma/detect-price
-// Receives a base64 PNG of a Figma frame + known price nodes from Figma API.
-// Uses Gemini Vision as a second pass to confirm/augment price detection,
-// then returns the element list ready for the to-html pipeline.
+// Receives a base64 PNG of a Figma frame + structural data from the Figma API.
+// Uses Gemini Vision as a second pass to confirm/augment price detection.
+// Returns PriceElement list with positions relative to the frame (0-100 %).
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getSessionFromRequest } from '@/lib/auth'
 import { GoogleGenerativeAI } from '@google/generative-ai'
-import type { PriceNode, FigmaTextStyle, FigmaColor } from '@/lib/figma/client'
+import type { PriceNode } from '@/lib/figma/client'
 import { figmaColorToCss } from '@/lib/figma/client'
 
-interface DetectPriceRequest {
-  imageBase64: string           // data:image/png;base64,... of the exported frame
-  frameWidth: number
-  frameHeight: number
-  knownPriceNodes?: PriceNode[] // from Figma API structural analysis
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface FrameBounds {
+  x: number
+  y: number
+  width: number
+  height: number
 }
 
-interface PriceElement {
+interface DetectPriceRequest {
+  imageBase64: string       // data:image/png;base64,... of the exported frame
+  frameBounds: FrameBounds  // absolute bounds of the frame in Figma canvas
+  knownPriceNodes?: PriceNode[]
+}
+
+export interface PriceElement {
   id: string
   text: string
-  top: number      // % from top of frame
-  left: number     // % from left of frame
-  fontSize: number
+  top: number       // % from top of frame (0-100)
+  left: number      // % from left of frame (0-100)
+  widthPct: number  // % width of frame
+  heightPct: number // % height of frame
+  fontSize: number  // original px size from Figma
   fontWeight: number
   fontFamily: string
-  color: string    // CSS rgba
-  bounds: { x: number; y: number; width: number; height: number }
+  color: string     // CSS rgba
 }
 
-const DETECT_PROMPT = `Eres experto en diseño gráfico publicitario inmobiliario.
-Analiza esta pieza publicitaria de Amarilo Colombia.
-Tu tarea es identificar TODOS los textos que representan precios o valores monetarios.
+// ─── Prompt ───────────────────────────────────────────────────────────────────
+
+const DETECT_PROMPT = `Eres experto en diseño gráfico publicitario inmobiliario colombiano.
+Analiza esta pieza publicitaria de Amarilo y encuentra TODOS los textos que representen precios o valores monetarios.
 
 Responde SOLO con JSON válido — array de objetos:
 [
   {
     "id": "price_1",
-    "text": "texto exacto del precio tal como aparece en la imagen",
+    "text": "texto exacto del precio como aparece en la imagen",
     "topPct": 45.5,
     "leftPct": 20.3,
+    "widthPct": 40.0,
     "estimatedFontSizePx": 48,
     "isBold": true,
     "colorHex": "#FFFFFF",
-    "confidence": "high | medium | low"
+    "confidence": "high"
   }
 ]
 
-Reglas:
-- topPct y leftPct son porcentajes (0-100) de la posición relativa dentro de la imagen
-- Incluye: precios en pesos ($450.000.000), SMMLV (desde 235 SMMLV), "desde $X", valores como "450M", "450 millones"
-- NO incluyas: nombres de proyectos, ciudades, slogans, ni textos que no sean valores monetarios
-- Si no encuentras precios, devuelve array vacío []
-- Responde SOLO el JSON, sin explicaciones`
+- topPct / leftPct / widthPct: porcentajes (0-100) relativos al tamaño de la imagen
+- Incluye: precios en pesos ($450.000.000), SMMLV (235 SMMLV), "desde $X", "450M", "450 millones"
+- NO incluyas: nombres de proyectos, ciudades, slogans ni textos que no sean valores monetarios
+- Si no hay precios, devuelve []
+- Responde SOLO el JSON, sin texto adicional`
+
+// ─── Handler ──────────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   const session = getSessionFromRequest(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await req.json() as DetectPriceRequest
-  const { imageBase64, frameWidth, frameHeight, knownPriceNodes = [] } = body
+  const { imageBase64, frameBounds, knownPriceNodes = [] } = body
 
   if (!imageBase64) return NextResponse.json({ error: 'imageBase64 requerido' }, { status: 400 })
+  if (!frameBounds) return NextResponse.json({ error: 'frameBounds requerido' }, { status: 400 })
 
+  const { x: frameX, y: frameY, width: frameW, height: frameH } = frameBounds
   const results: PriceElement[] = []
 
-  // 1. Use Figma structural data (highest precision — exact positions)
+  // ── 1. Structural data from Figma (exact positions) ────────────────────────
+  // Figma absoluteBoundingBox coords are relative to the canvas origin.
+  // Subtract the frame's origin to get frame-relative positions.
   for (const node of knownPriceNodes) {
+    const relX = node.bounds.x - frameX
+    const relY = node.bounds.y - frameY
+    const fill = node.color
+
     results.push({
       id: node.id,
       text: node.text,
-      top: ((node.bounds.y / frameHeight) * 100),
-      left: ((node.bounds.x / frameWidth) * 100),
+      top: (relY / frameH) * 100,
+      left: (relX / frameW) * 100,
+      widthPct: (node.bounds.width / frameW) * 100,
+      heightPct: (node.bounds.height / frameH) * 100,
       fontSize: node.style.fontSize,
       fontWeight: node.style.fontWeight,
       fontFamily: node.style.fontFamily || 'Inter',
-      color: figmaColorToCss(node.color),
-      bounds: node.bounds,
+      color: figmaColorToCss(fill),
     })
   }
 
-  // 2. Run Gemini Vision for visual confirmation / additional detection
+  // ── 2. Gemini Vision (visual confirmation + extra detection) ───────────────
   const geminiKey = process.env.GEMINI_API_KEY
   if (geminiKey) {
     try {
       const genAI = new GoogleGenerativeAI(geminiKey)
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
+      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
 
-      // Strip data URL prefix for Gemini
       const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '')
 
       const result = await model.generateContent([
@@ -97,7 +117,7 @@ export async function POST(req: NextRequest) {
       const raw = result.response.text().trim()
       const m = raw.match(/```(?:json)?\s*([\s\S]*?)```/) || raw.match(/(\[[\s\S]*\])/)
       const detected = JSON.parse(m ? m[1] : raw) as Array<{
-        id: string; text: string; topPct: number; leftPct: number
+        id: string; text: string; topPct: number; leftPct: number; widthPct?: number
         estimatedFontSizePx: number; isBold: boolean; colorHex: string; confidence: string
       }>
 
@@ -108,23 +128,18 @@ export async function POST(req: NextRequest) {
         const normalizedText = String(d.text || '').trim()
         if (!normalizedText || existingTexts.has(normalizedText.toLowerCase())) continue
 
-        // This is a new price found by vision (not in Figma structure)
         existingTexts.add(normalizedText.toLowerCase())
         results.push({
-          id: `vision_${d.id || results.length}`,
+          id: `vision_${results.length}`,
           text: normalizedText,
           top: Number(d.topPct) || 50,
           left: Number(d.leftPct) || 50,
+          widthPct: Number(d.widthPct) || 30,
+          heightPct: (Number(d.estimatedFontSizePx) / frameH) * 100 * 1.4,
           fontSize: Number(d.estimatedFontSizePx) || 32,
           fontWeight: d.isBold ? 700 : 400,
           fontFamily: 'Inter',
           color: d.colorHex || '#FFFFFF',
-          bounds: {
-            x: (Number(d.leftPct) / 100) * frameWidth,
-            y: (Number(d.topPct) / 100) * frameHeight,
-            width: 200,
-            height: 50,
-          },
         })
       }
     } catch (geminiErr) {
@@ -142,12 +157,3 @@ export async function POST(req: NextRequest) {
     },
   })
 }
-
-// Helper used by the Figma editor client to build font CSS from a PriceElement
-export function buildPriceFontStyle(el: {
-  fontSize: number; fontWeight: number; fontFamily: string; color: string
-}): string {
-  return `font-family: '${el.fontFamily}', sans-serif; font-size: ${el.fontSize}px; font-weight: ${el.fontWeight}; color: ${el.color};`
-}
-
-export type { PriceElement, DetectPriceRequest, FigmaTextStyle, FigmaColor }

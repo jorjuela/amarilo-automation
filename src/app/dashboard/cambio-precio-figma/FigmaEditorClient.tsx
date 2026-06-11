@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
+import { useState } from 'react'
 import type { DetectedFrame, PriceNode } from '@/lib/figma/client'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -8,23 +8,24 @@ import type { DetectedFrame, PriceNode } from '@/lib/figma/client'
 interface PriceElement {
   id: string
   text: string
-  top: number
-  left: number
-  fontSize: number
+  top: number        // % from top of frame (0-100)
+  left: number       // % from left of frame (0-100)
+  widthPct: number   // % width of frame
+  heightPct: number  // % height of frame
+  fontSize: number   // px, from Figma
   fontWeight: number
   fontFamily: string
-  color: string
-  bounds: { x: number; y: number; width: number; height: number }
+  color: string      // CSS rgba
 }
 
 interface FrameItem {
   frame: DetectedFrame
-  imageBase64: string | null   // null = not yet exported
+  imageBase64: string | null
   priceElements: PriceElement[]
   status: 'idle' | 'exporting' | 'detecting' | 'ready' | 'rendering' | 'done' | 'error'
   error?: string
   newPrice: string
-  exportedPng?: string         // final rendered PNG with new price
+  exportedPng?: string
   selected: boolean
 }
 
@@ -43,7 +44,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
 
   const activeFrame = frames.find((f) => f.frame.id === activeFrameId) || null
 
-  // ── Load Figma file frames ────────────────────────────────────────────────
+  // ── Load Figma file ───────────────────────────────────────────────────────
 
   async function handleLoadFile() {
     if (!fileUrl.trim()) return
@@ -59,26 +60,17 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
 
       setFileKey(data.fileKey)
       setFileName(data.fileName)
+
       const items: FrameItem[] = (data.frames as DetectedFrame[]).map((f) => ({
         frame: f,
         imageBase64: null,
-        priceElements: f.priceNodes.map((n: PriceNode) => ({
-          id: n.id,
-          text: n.text,
-          top: 0,   // will be filled during detect
-          left: 0,
-          fontSize: n.style.fontSize,
-          fontWeight: n.style.fontWeight,
-          fontFamily: n.style.fontFamily || 'Inter',
-          color: '#FFFFFF',
-          bounds: n.bounds,
-        })),
+        priceElements: [],
         status: 'idle',
         newPrice: '',
-        selected: f.priceNodes.length > 0, // auto-select frames with detected prices
+        selected: f.priceNodes.length > 0,
       }))
       setFrames(items)
-      // Auto-select first frame with prices
+
       const first = items.find((i) => i.frame.priceNodes.length > 0)
       if (first) setActiveFrameId(first.frame.id)
     } catch (err) {
@@ -88,18 +80,14 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     }
   }
 
-  // ── Toggle frame selection ────────────────────────────────────────────────
+  // ── Selection helpers ─────────────────────────────────────────────────────
 
   function toggleSelect(frameId: string) {
-    setFrames((prev) =>
-      prev.map((f) => f.frame.id === frameId ? { ...f, selected: !f.selected } : f)
-    )
+    setFrames((prev) => prev.map((f) => f.frame.id === frameId ? { ...f, selected: !f.selected } : f))
   }
-
   function selectAll() {
     setFrames((prev) => prev.map((f) => ({ ...f, selected: true })))
   }
-
   function selectWithPrices() {
     setFrames((prev) => prev.map((f) => ({ ...f, selected: f.frame.priceNodes.length > 0 })))
   }
@@ -111,13 +99,12 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     if (selected.length === 0) return
     setProcessing(true)
 
-    // 1. Export all selected frames as images
     const frameIds = selected.map((f) => f.frame.id)
     setFrames((prev) =>
-      prev.map((f) => selected.some((s) => s.frame.id === f.frame.id)
-        ? { ...f, status: 'exporting' } : f)
+      prev.map((f) => selected.some((s) => s.frame.id === f.frame.id) ? { ...f, status: 'exporting' } : f)
     )
 
+    // 1. Export frames from Figma CDN → base64
     let imageMap: Record<string, string> = {}
     try {
       const res = await fetch('/api/figma', {
@@ -137,7 +124,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
       return
     }
 
-    // 2. Run price detection on each frame concurrently
+    // 2. Run price detection on each frame
     await Promise.all(
       selected.map(async (item) => {
         const img = imageMap[item.frame.id]
@@ -150,8 +137,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
         }
 
         setFrames((prev) =>
-          prev.map((f) => f.frame.id === item.frame.id
-            ? { ...f, imageBase64: img, status: 'detecting' } : f)
+          prev.map((f) => f.frame.id === item.frame.id ? { ...f, imageBase64: img, status: 'detecting' } : f)
         )
 
         try {
@@ -160,8 +146,8 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               imageBase64: img,
-              frameWidth: item.frame.bounds.width,
-              frameHeight: item.frame.bounds.height,
+              // Pass full frame bounds so detect-price can subtract the frame origin
+              frameBounds: item.frame.bounds,
               knownPriceNodes: item.frame.priceNodes,
             }),
           })
@@ -169,8 +155,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
           const priceElements: PriceElement[] = detectData.priceElements || []
 
           setFrames((prev) =>
-            prev.map((f) => f.frame.id === item.frame.id
-              ? { ...f, priceElements, status: 'ready' } : f)
+            prev.map((f) => f.frame.id === item.frame.id ? { ...f, priceElements, status: 'ready' } : f)
           )
         } catch (detectErr) {
           setFrames((prev) =>
@@ -182,12 +167,12 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     )
 
     setProcessing(false)
-    // Open first ready frame
-    const first = frames.find((f) => selected.some((s) => s.frame.id === f.frame.id))
-    if (first && !activeFrameId) setActiveFrameId(first.frame.id)
+    // Auto-open first processed frame
+    const firstId = selected[0]?.frame.id
+    if (firstId && !activeFrameId) setActiveFrameId(firstId)
   }
 
-  // ── Apply global price to all selected + ready frames ────────────────────
+  // ── Apply global price ────────────────────────────────────────────────────
 
   function applyGlobalPrice() {
     if (!globalPrice.trim()) return
@@ -200,65 +185,57 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     )
   }
 
-  // ── Render a single frame with new price via our existing to-html pipeline ─
+  // ── Render one frame with new price ──────────────────────────────────────
 
   async function renderFrame(frameId: string) {
     const item = frames.find((f) => f.frame.id === frameId)
     if (!item?.imageBase64 || !item.newPrice.trim() || item.priceElements.length === 0) return
 
-    setFrames((prev) =>
-      prev.map((f) => f.frame.id === frameId ? { ...f, status: 'rendering' } : f)
-    )
+    setFrames((prev) => prev.map((f) => f.frame.id === frameId ? { ...f, status: 'rendering' } : f))
 
     try {
-      // Build HTML overlay: background image + text elements with detected positions
       const { width, height } = item.frame.bounds
-      const priceEl = item.priceElements[0] // use first price element as primary
-
-      // Build a simple HTML with the new price at the detected position
       const html = buildPriceHtml(item.imageBase64, item.priceElements, item.newPrice, width, height)
 
-      // Export via Playwright
       const exportRes = await fetch('/api/price-pieces/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ html, width, height, format: 'png' }),
       })
 
-      if (!exportRes.ok) throw new Error('Export failed')
+      if (!exportRes.ok) {
+        const errData = await exportRes.json().catch(() => ({ error: 'Export failed' }))
+        throw new Error(errData.error || 'Export failed')
+      }
+
       const blob = await exportRes.blob()
       const pngUrl = URL.createObjectURL(blob)
 
       setFrames((prev) =>
-        prev.map((f) => f.frame.id === frameId
-          ? { ...f, status: 'done', exportedPng: pngUrl } : f)
+        prev.map((f) => f.frame.id === frameId ? { ...f, status: 'done', exportedPng: pngUrl } : f)
       )
     } catch (err) {
       setFrames((prev) =>
-        prev.map((f) => f.frame.id === frameId
-          ? { ...f, status: 'error', error: String(err) } : f)
+        prev.map((f) => f.frame.id === frameId ? { ...f, status: 'error', error: String(err) } : f)
       )
     }
   }
 
-  // ── Batch render all ready frames ─────────────────────────────────────────
+  // ── Batch render ──────────────────────────────────────────────────────────
 
   async function renderAllSelected() {
     const toRender = frames.filter(
       (f) => f.selected && f.status === 'ready' && f.newPrice.trim() && f.priceElements.length > 0
     )
-    for (const f of toRender) {
-      await renderFrame(f.frame.id)
-    }
+    for (const f of toRender) await renderFrame(f.frame.id)
   }
 
-  // ── Download all exported frames as ZIP ──────────────────────────────────
+  // ── Download ZIP ──────────────────────────────────────────────────────────
 
   async function downloadAll() {
     const done = frames.filter((f) => f.status === 'done' && f.exportedPng)
     if (done.length === 0) return
 
-    // Dynamic import of JSZip
     const JSZip = (await import('jszip')).default
     const zip = new JSZip()
 
@@ -278,11 +255,11 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     a.click()
   }
 
-  // ─── Helpers ───────────────────────────────────────────────────────────────
+  // ── Derived counts ────────────────────────────────────────────────────────
 
   const selectedCount = frames.filter((f) => f.selected).length
-  const readyCount = frames.filter((f) => f.status === 'ready').length
-  const doneCount = frames.filter((f) => f.status === 'done').length
+  const readyCount    = frames.filter((f) => f.status === 'ready').length
+  const doneCount     = frames.filter((f) => f.status === 'done').length
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
@@ -299,28 +276,33 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
             onKeyDown={(e) => e.key === 'Enter' && handleLoadFile()}
             placeholder="https://www.figma.com/file/XXXXX/Mi-Proyecto"
             className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-400"
+            disabled={!hasFigmaToken}
           />
           <button
             onClick={handleLoadFile}
-            disabled={loading || !fileUrl.trim()}
+            disabled={loading || !fileUrl.trim() || !hasFigmaToken}
             className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? 'Cargando...' : 'Cargar Archivo'}
           </button>
         </div>
-        {loadError && (
-          <p className="text-red-600 text-xs mt-2">{loadError}</p>
-        )}
+        {loadError && <p className="text-red-600 text-xs mt-2">{loadError}</p>}
         {fileName && (
-          <p className="text-green-700 text-xs mt-2 font-medium">✓ {fileName} — {frames.length} frames encontrados</p>
+          <p className="text-green-700 text-xs mt-2 font-medium">
+            ✓ {fileName} — {frames.length} frames encontrados
+            {frames.filter((f) => f.frame.priceNodes.length > 0).length > 0 && (
+              <span className="ml-2 text-amber-600">
+                ({frames.filter((f) => f.frame.priceNodes.length > 0).length} con precios detectados)
+              </span>
+            )}
+          </p>
         )}
       </div>
 
       {frames.length > 0 && (
         <div className="flex gap-4">
-          {/* Frame list (left panel) */}
+          {/* Left panel: frame list */}
           <div className="w-72 flex-shrink-0 space-y-2">
-            {/* Selection controls */}
             <div className="card p-3">
               <div className="flex gap-2 mb-3">
                 <button onClick={selectAll} className="text-xs px-2 py-1 rounded border border-gray-200 hover:bg-gray-50">
@@ -340,7 +322,6 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
               </button>
             </div>
 
-            {/* Frames */}
             <div className="space-y-1 max-h-[60vh] overflow-y-auto pr-1">
               {frames.map((item) => (
                 <FrameCard
@@ -354,14 +335,13 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
             </div>
           </div>
 
-          {/* Detail panel (right) */}
+          {/* Right panel: detail */}
           <div className="flex-1 space-y-3">
-            {/* Global price control */}
             {readyCount > 0 && (
-              <div className="card p-4 flex items-end gap-3">
-                <div className="flex-1">
+              <div className="card p-4 flex items-end gap-3 flex-wrap">
+                <div className="flex-1 min-w-48">
                   <label className="block text-xs font-semibold text-gray-700 mb-1">
-                    Nuevo precio (aplica a todos los frames listos seleccionados)
+                    Nuevo precio — aplicar a todos los frames seleccionados
                   </label>
                   <input
                     type="text"
@@ -398,20 +378,17 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
               </div>
             )}
 
-            {/* Active frame detail */}
-            {activeFrame && (
+            {activeFrame ? (
               <FrameDetail
                 item={activeFrame}
-                onPriceChange={(price) => {
+                onPriceChange={(price) =>
                   setFrames((prev) =>
                     prev.map((f) => f.frame.id === activeFrame.frame.id ? { ...f, newPrice: price } : f)
                   )
-                }}
+                }
                 onRender={() => renderFrame(activeFrame.frame.id)}
               />
-            )}
-
-            {!activeFrame && frames.length > 0 && (
+            ) : (
               <div className="card p-8 text-center text-gray-400 text-sm">
                 Selecciona un frame de la lista para ver sus detalles
               </div>
@@ -423,30 +400,27 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
   )
 }
 
-// ─── FrameCard (sidebar item) ─────────────────────────────────────────────────
+// ─── FrameCard ────────────────────────────────────────────────────────────────
+
+const STATUS_COLOR: Record<string, string> = {
+  idle: 'bg-gray-100 text-gray-500',
+  exporting: 'bg-blue-100 text-blue-600',
+  detecting: 'bg-purple-100 text-purple-600',
+  ready: 'bg-green-100 text-green-700',
+  rendering: 'bg-yellow-100 text-yellow-700',
+  done: 'bg-emerald-100 text-emerald-700',
+  error: 'bg-red-100 text-red-600',
+}
+const STATUS_LABEL: Record<string, string> = {
+  idle: 'Pendiente', exporting: 'Exportando...', detecting: 'Detectando...',
+  ready: 'Listo', rendering: 'Generando...', done: 'Generado', error: 'Error',
+}
 
 function FrameCard({
   item, isActive, onSelect, onClick,
 }: {
-  item: FrameItem
-  isActive: boolean
-  onSelect: () => void
-  onClick: () => void
+  item: FrameItem; isActive: boolean; onSelect: () => void; onClick: () => void
 }) {
-  const statusColor: Record<string, string> = {
-    idle: 'bg-gray-100 text-gray-500',
-    exporting: 'bg-blue-100 text-blue-600',
-    detecting: 'bg-purple-100 text-purple-600',
-    ready: 'bg-green-100 text-green-700',
-    rendering: 'bg-yellow-100 text-yellow-700',
-    done: 'bg-emerald-100 text-emerald-700',
-    error: 'bg-red-100 text-red-600',
-  }
-  const statusLabel: Record<string, string> = {
-    idle: 'Pendiente', exporting: 'Exportando...', detecting: 'Detectando...',
-    ready: 'Listo', rendering: 'Generando...', done: 'Generado', error: 'Error',
-  }
-
   return (
     <div
       onClick={onClick}
@@ -457,15 +431,15 @@ function FrameCard({
           type="checkbox"
           checked={item.selected}
           onChange={(e) => { e.stopPropagation(); onSelect() }}
-          className="mt-0.5 rounded"
           onClick={(e) => e.stopPropagation()}
+          className="mt-0.5 rounded"
         />
         <div className="flex-1 min-w-0">
           <p className="text-xs font-semibold text-gray-800 truncate">{item.frame.name}</p>
           <p className="text-xs text-gray-400 truncate">{item.frame.pageName}</p>
           <div className="flex items-center gap-2 mt-1">
-            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${statusColor[item.status]}`}>
-              {statusLabel[item.status]}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${STATUS_COLOR[item.status]}`}>
+              {STATUS_LABEL[item.status]}
             </span>
             {item.frame.priceNodes.length > 0 && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">
@@ -474,23 +448,23 @@ function FrameCard({
             )}
           </div>
         </div>
-        {item.status === 'done' && (
-          <span className="text-emerald-500 text-sm">✓</span>
-        )}
+        {item.status === 'done' && <span className="text-emerald-500 text-sm flex-shrink-0">✓</span>}
       </div>
     </div>
   )
 }
 
-// ─── FrameDetail (right panel) ────────────────────────────────────────────────
+// ─── FrameDetail ──────────────────────────────────────────────────────────────
 
 function FrameDetail({
   item, onPriceChange, onRender,
 }: {
   item: FrameItem
-  onPriceChange: (price: string) => void
+  onPriceChange: (p: string) => void
   onRender: () => void
 }) {
+  const isProcessing = item.status === 'exporting' || item.status === 'detecting' || item.status === 'rendering'
+
   return (
     <div className="card overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
@@ -498,61 +472,56 @@ function FrameDetail({
           <span className="font-semibold text-gray-800 text-sm">{item.frame.name}</span>
           <span className="text-gray-400 text-xs ml-2">{item.frame.pageName}</span>
         </div>
-        <span className="text-xs text-gray-400">
+        <span className="text-xs text-gray-400 font-mono">
           {Math.round(item.frame.bounds.width)} × {Math.round(item.frame.bounds.height)} px
         </span>
       </div>
 
       <div className="p-4 flex gap-4">
-        {/* Image preview */}
+        {/* Preview */}
         <div className="flex-shrink-0">
           {item.status === 'done' && item.exportedPng ? (
             <div className="space-y-2">
               <p className="text-xs font-semibold text-emerald-700">Resultado con nuevo precio:</p>
-              <div className="relative">
-                <img
-                  src={item.exportedPng}
-                  alt={item.frame.name}
-                  className="max-w-[220px] max-h-[280px] object-contain rounded border border-gray-200 shadow-sm"
-                />
-                <a
-                  href={item.exportedPng}
-                  download={`${item.frame.name}_nuevo_precio.png`}
-                  className="mt-2 block text-center text-xs text-blue-600 hover:underline"
-                >
-                  Descargar PNG
-                </a>
-              </div>
+              <img
+                src={item.exportedPng}
+                alt={item.frame.name}
+                className="max-w-[220px] max-h-[300px] object-contain rounded border border-gray-200 shadow-sm"
+              />
+              <a
+                href={item.exportedPng}
+                download={`${item.frame.name.replace(/[^a-zA-Z0-9_\-]/g, '_')}_nuevo_precio.png`}
+                className="block text-center text-xs text-blue-600 hover:underline"
+              >
+                Descargar PNG
+              </a>
             </div>
           ) : item.imageBase64 ? (
             <div className="relative">
               <img
                 src={item.imageBase64}
                 alt={item.frame.name}
-                className="max-w-[220px] max-h-[280px] object-contain rounded border border-gray-200"
+                className="max-w-[220px] max-h-[300px] object-contain rounded border border-gray-200"
               />
-              {/* Price overlays */}
-              {item.priceElements.length > 0 && (
-                <div className="absolute inset-0">
-                  {item.priceElements.map((el) => (
-                    <div
-                      key={el.id}
-                      className="absolute border-2 border-yellow-400 bg-yellow-400/20 rounded"
-                      style={{
-                        top: `${el.top}%`,
-                        left: `${el.left}%`,
-                        minWidth: 40,
-                        minHeight: 12,
-                      }}
-                      title={`Precio detectado: ${el.text}`}
-                    />
-                  ))}
-                </div>
-              )}
+              {/* Price highlight overlays */}
+              {item.priceElements.map((el) => (
+                <div
+                  key={el.id}
+                  className="absolute border-2 border-yellow-400 bg-yellow-400/20 rounded pointer-events-none"
+                  style={{
+                    top: `${el.top}%`,
+                    left: `${el.left}%`,
+                    width: `${el.widthPct}%`,
+                    height: `${el.heightPct}%`,
+                    minHeight: 12,
+                  }}
+                  title={`Precio: ${el.text}`}
+                />
+              ))}
             </div>
           ) : (
             <div className="w-[180px] h-[240px] bg-gray-100 rounded flex items-center justify-center">
-              {item.status === 'exporting' || item.status === 'detecting' ? (
+              {isProcessing ? (
                 <span className="text-xs text-gray-400 animate-pulse">
                   {item.status === 'exporting' ? 'Exportando...' : 'Analizando...'}
                 </span>
@@ -573,12 +542,17 @@ function FrameDetail({
               </p>
               <div className="space-y-1">
                 {item.priceElements.map((el) => (
-                  <div key={el.id} className="flex items-center gap-2 text-xs">
+                  <div key={el.id} className="flex items-center gap-2 text-xs bg-amber-50 rounded px-2 py-1">
                     <span className="w-2 h-2 rounded-full bg-yellow-400 flex-shrink-0" />
-                    <span className="font-mono text-gray-800">{el.text}</span>
-                    <span className="text-gray-400">
-                      {el.fontFamily} {el.fontSize}px {el.fontWeight >= 700 ? 'Bold' : 'Regular'}
+                    <span className="font-mono font-semibold text-gray-800">{el.text}</span>
+                    <span className="text-gray-400 text-[10px]">
+                      {el.fontFamily} {el.fontSize}px {el.fontWeight >= 700 ? 'Bold' : ''}
                     </span>
+                    <span
+                      className="ml-auto w-3 h-3 rounded border border-gray-300 flex-shrink-0"
+                      style={{ background: el.color }}
+                      title={el.color}
+                    />
                   </div>
                 ))}
               </div>
@@ -588,7 +562,7 @@ function FrameDetail({
           {item.priceElements.length === 0 && item.status === 'ready' && (
             <div className="p-3 bg-amber-50 rounded border border-amber-100">
               <p className="text-xs text-amber-700">
-                No se detectaron precios en este frame. Puede que el precio esté incrustado en una imagen o use un formato no reconocido.
+                No se detectaron precios en este frame. El precio puede estar dentro de un objeto vectorial o imagen rasterizada.
               </p>
             </div>
           )}
@@ -596,9 +570,7 @@ function FrameDetail({
           {/* New price input */}
           {(item.status === 'ready' || item.status === 'done' || item.status === 'rendering') && item.priceElements.length > 0 && (
             <div>
-              <label className="block text-xs font-semibold text-gray-700 mb-1">
-                Nuevo precio
-              </label>
+              <label className="block text-xs font-semibold text-gray-700 mb-1">Nuevo precio</label>
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -616,21 +588,24 @@ function FrameDetail({
                 </button>
               </div>
               <p className="text-xs text-gray-400 mt-1">
-                Se usará la misma tipografía ({item.priceElements[0]?.fontFamily}, {item.priceElements[0]?.fontSize}px)
+                Tipografía: {item.priceElements[0]?.fontFamily}, {item.priceElements[0]?.fontSize}px
               </p>
             </div>
           )}
 
           {item.status === 'error' && item.error && (
             <div className="p-3 bg-red-50 rounded border border-red-100">
-              <p className="text-xs text-red-700">{item.error}</p>
+              <p className="text-xs font-semibold text-red-700 mb-1">Error</p>
+              <p className="text-xs text-red-600">{item.error}</p>
             </div>
           )}
 
-          {(item.status === 'exporting' || item.status === 'detecting') && (
+          {isProcessing && (
             <div className="flex items-center gap-2 text-xs text-gray-500">
-              <div className="w-4 h-4 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin" />
-              {item.status === 'exporting' ? 'Exportando frame desde Figma...' : 'Detectando precios con Gemini...'}
+              <div className="w-4 h-4 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin flex-shrink-0" />
+              {item.status === 'exporting' && 'Exportando frame desde Figma...'}
+              {item.status === 'detecting' && 'Detectando precios con Gemini Vision...'}
+              {item.status === 'rendering' && 'Generando PNG con nuevo precio...'}
             </div>
           )}
         </div>
@@ -639,7 +614,9 @@ function FrameDetail({
   )
 }
 
-// ─── Build HTML for re-rendering with new price ───────────────────────────────
+// ─── HTML builder for Playwright rendering ────────────────────────────────────
+// Uses top/left as percentages (already frame-relative from detect-price route).
+// Font size in px directly (no vh) so it's independent of viewport quirks.
 
 function buildPriceHtml(
   backgroundBase64: string,
@@ -648,21 +625,21 @@ function buildPriceHtml(
   width: number,
   height: number,
 ): string {
-  const overlays = priceElements.map((el) => {
-    const pct = (v: number, total: number) => `${((v / total) * 100).toFixed(2)}%`
-    return `<div style="
-      position: absolute;
-      top: ${pct(el.bounds.y, height)};
-      left: ${pct(el.bounds.x, width)};
-      width: ${pct(el.bounds.width, width)};
-      font-family: '${el.fontFamily}', 'Arial', sans-serif;
-      font-size: ${(el.fontSize / height * 100).toFixed(2)}vh;
-      font-weight: ${el.fontWeight};
-      color: ${el.color};
-      white-space: nowrap;
-      line-height: 1.1;
-    ">${escHtml(newPrice)}</div>`
-  }).join('\n')
+  const overlays = priceElements.map((el) => `<div style="
+    position: absolute;
+    top: ${el.top.toFixed(3)}%;
+    left: ${el.left.toFixed(3)}%;
+    width: ${el.widthPct.toFixed(3)}%;
+    min-width: max-content;
+    font-family: '${el.fontFamily}', 'Helvetica Neue', Arial, sans-serif;
+    font-size: ${el.fontSize}px;
+    font-weight: ${el.fontWeight};
+    color: ${el.color};
+    white-space: nowrap;
+    line-height: 1.15;
+    text-rendering: geometricPrecision;
+    -webkit-font-smoothing: antialiased;
+  ">${escHtml(newPrice)}</div>`).join('\n')
 
   return `<!DOCTYPE html>
 <html>
@@ -670,9 +647,9 @@ function buildPriceHtml(
 <meta charset="utf-8">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { width: ${width}px; height: ${height}px; overflow: hidden; background: #000; }
+  body { width: ${width}px; height: ${height}px; overflow: hidden; }
   .frame { position: relative; width: ${width}px; height: ${height}px; overflow: hidden; }
-  .bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .bg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 </style>
 </head>
 <body>
