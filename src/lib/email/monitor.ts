@@ -28,6 +28,8 @@ export interface EmailBrief {
   threadMessageCount: number
   attachmentName?: string
   pdfBuffer?: Buffer
+  /** URLs extracted from email bodies (links to Drive, presentations, briefs, etc.) */
+  links?: string[]
 }
 
 export function createGmailClient(credentials: {
@@ -91,6 +93,38 @@ function stripHtml(html: string): string {
     .trim()
 }
 
+/** Extract unique URLs from HTML (href/src) and plain text */
+function extractLinks(html: string, plainText: string): string[] {
+  const seen = new Set<string>()
+  const results: string[] = []
+
+  // From HTML: href and src attributes
+  const hrefRegex = /href=["']([^"']+)["']/gi
+  let m: RegExpExecArray | null
+  while ((m = hrefRegex.exec(html)) !== null) {
+    const url = m[1].trim()
+    if (url.startsWith('http') && !seen.has(url) && !url.includes('mail.google.com') && !url.includes('unsubscribe')) {
+      seen.add(url)
+      results.push(url)
+    }
+  }
+
+  // From plain text: bare URLs
+  const urlRegex = /https?:\/\/[^\s<>"',)]+/g
+  for (const text of [plainText]) {
+    let um: RegExpExecArray | null
+    while ((um = urlRegex.exec(text)) !== null) {
+      const url = um[0].replace(/[.,;:]+$/, '')
+      if (!seen.has(url) && !url.includes('mail.google.com') && !url.includes('unsubscribe')) {
+        seen.add(url)
+        results.push(url)
+      }
+    }
+  }
+
+  return results.slice(0, 30) // cap to avoid noise
+}
+
 // ─── Main: fetch threads (entire email chains) ────────────────────────────────
 
 export async function fetchUnprocessedBriefEmails(credentials: {
@@ -137,6 +171,7 @@ export async function fetchUnprocessedBriefEmails(credentials: {
     // Collect text and PDFs from EVERY message in the thread
     const allPdfs: { filename: string; attachmentId: string; messageId: string }[] = []
     const textParts: string[] = []
+    const allHtmlBodies: string[] = []
 
     for (const msg of messages) {
       if (!msg.id || !msg.payload) continue
@@ -156,6 +191,8 @@ export async function fetchUnprocessedBriefEmails(credentials: {
 
       const found: WalkResult = { pdfs: [], textPlain: '', textHtml: '' }
       walkParts(parts, found)
+
+      if (found.textHtml) allHtmlBodies.push(found.textHtml)
 
       const msgText = found.textPlain || stripHtml(found.textHtml)
       if (msgText.trim()) {
@@ -191,6 +228,10 @@ export async function fetchUnprocessedBriefEmails(credentials: {
     const threadText = textParts.join('\n\n')
     const bodyText   = textParts[0] || ''  // first message body
 
+    // Extract all links from thread HTML bodies and plain text
+    const combinedHtml = allHtmlBodies.join('\n')
+    const links = extractLinks(combinedHtml, threadText)
+
     // Use thread ID as the dedup key (messageId field)
     // This ensures we don't re-process the same thread
     results.push({
@@ -206,6 +247,7 @@ export async function fetchUnprocessedBriefEmails(credentials: {
       threadMessageCount: messages.length,
       attachmentName: pdfAttachments[0]?.filename,
       pdfBuffer: pdfAttachments[0]?.buffer,
+      links,
     })
   }
 

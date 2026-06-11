@@ -85,6 +85,7 @@ export interface TrafficEntry {
   jiraTicket?: string
   notes?: string
   projectId: string
+  aiGenerated?: boolean
 }
 
 export interface TrafficWeek {

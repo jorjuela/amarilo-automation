@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { fetchUnprocessedBriefEmails, markEmailAsRead } from '@/lib/email/monitor'
-import { extractProject, generateProjectBlocks } from '@/lib/ai/project-extractor'
+import { extractProject, generateProjectBlocks, extractTrafficSuggestions } from '@/lib/ai/project-extractor'
 import type { TextSource } from '@/lib/ai/project-extractor'
 import { generateJiraStructuresForProject } from '@/lib/jira/generator'
 import type { Project, TorreData } from '@/types'
+import { getWeeksInMonth } from '@/lib/dates'
 
 type PrismaProject = Awaited<ReturnType<typeof prisma.project.findUniqueOrThrow>> & {
   torres: Awaited<ReturnType<typeof prisma.torre.findMany>>
@@ -98,7 +99,7 @@ export async function GET(req: Request) {
         // Use full thread text (all messages in chain) as body source
         const threadText = email.threadText?.trim() ?? email.bodyText?.trim() ?? ''
         if (threadText.length > 50) {
-          sources.push({ filename: 'email-thread.txt', text: threadText, isBody: true })
+          sources.push({ filename: 'email-thread.txt', text: threadText, isBody: true, links: email.links })
         }
 
         if (sources.length === 0) {
@@ -191,6 +192,46 @@ export async function GET(req: Request) {
           await prisma.jiraStructure.createMany({
             data: jira.map((j) => ({ epic: j.epic, task: j.task, subtask: j.subtask, month: j.month, type: j.type, projectId: project.id })),
           })
+        }
+
+        // ── Auto-generate traffic entries from brief ─────────────────────────
+        try {
+          const campaignData = extracted.campaign
+          const suggestions = await extractTrafficSuggestions(
+            combinedRaw,
+            project.name,
+            campaignData.channels,
+          )
+          if (suggestions.length > 0) {
+            // Use current-week or next-week based on today's date
+            const now = new Date()
+            const weeks = getWeeksInMonth(now.getFullYear(), now.getMonth() + 1)
+            // Find the week that contains today or the next upcoming week
+            const todayTime = now.getTime()
+            const targetWeek = weeks.find((w) => new Date(w.weekEnd).getTime() >= todayTime) || weeks[weeks.length - 1]
+
+            if (targetWeek) {
+              await prisma.trafficEntry.createMany({
+                data: suggestions.map((s) => ({
+                  weekStart: new Date(targetWeek.weekStart),
+                  weekEnd: new Date(targetWeek.weekEnd),
+                  weekLabel: targetWeek.weekLabel,
+                  dayOfWeek: s.dayOfWeek,
+                  campaign: s.campaign,
+                  requirement: s.requirement,
+                  numTexts: s.numTexts,
+                  numGraphics: s.numGraphics,
+                  notes: s.notes || null,
+                  status: 'pending',
+                  aiGenerated: true,
+                  projectId: project.id,
+                })),
+              })
+              console.log(`  ↳ ${suggestions.length} traffic entries AI-generated for "${project.name}"`)
+            }
+          }
+        } catch (trafficErr) {
+          console.error('Traffic auto-generate error:', trafficErr)
         }
 
         // Google Sheet

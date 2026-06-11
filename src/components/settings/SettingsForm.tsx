@@ -6,6 +6,7 @@ interface SettingsData {
   gmail?: { clientId?: string; clientSecret?: string; refreshToken?: string; email?: string }
   googleDrive?: { clientEmail?: string; privateKey?: string; folderId?: string }
   jira?: { boardUrl?: string; projectKey?: string }
+  figma?: { token?: string }
   emailSubjectPattern?: string
   cronEnabled?: boolean
 }
@@ -19,6 +20,7 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
       projectKey: 'AMARILO',
       ...initialSettings.jira,
     },
+    figma: { token: '', ...initialSettings.figma },
     emailSubjectPattern: initialSettings.emailSubjectPattern || 'AMARILO |',
     cronEnabled: initialSettings.cronEnabled ?? false,
   })
@@ -353,6 +355,45 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
         ) : testResult ? (
           <pre className="mt-2 p-3 bg-gray-900 text-green-400 text-xs rounded-lg overflow-x-auto">{testResult}</pre>
         ) : null}
+      </Section>
+
+      {/* Figma */}
+      <Section
+        title="Figma API"
+        desc="Para el editor de Cambio de Precio con detección de precios por IA"
+        icon="🎨"
+        guide={
+          <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-3 mt-2">
+            <p className="font-medium text-gray-700 mb-1">Cómo obtener tu Personal Access Token:</p>
+            <ol className="list-decimal list-inside space-y-0.5">
+              <li>Ingresa a Figma → menú de tu cuenta (esquina superior izquierda)</li>
+              <li>Ve a <strong>Settings → Account → Personal access tokens</strong></li>
+              <li>Haz clic en <strong>Generate new token</strong> y dale un nombre</li>
+              <li>Copia el token generado y pégalo aquí</li>
+            </ol>
+            <p className="mt-2 text-amber-600 font-medium">
+              El token solo puede leer archivos de Figma a los que tengas acceso (View o Edit).
+            </p>
+          </div>
+        }
+      >
+        <Field
+          label="Personal Access Token"
+          value={settings.figma?.token === '***saved***' ? '' : (settings.figma?.token || '')}
+          onChange={(v) => update('figma', 'token', v)}
+          type="password"
+          placeholder={settings.figma?.token === '***saved***' ? '✓ Token guardado' : 'figd_XXXXXXXX...'}
+        />
+        {settings.figma?.token && settings.figma.token !== '***saved***' && (
+          <p className="text-xs text-green-600 mt-2">✓ Token configurado</p>
+        )}
+        <p className="text-xs text-gray-400 mt-2">
+          Con el token configurado podrás usar{' '}
+          <a href="/dashboard/cambio-precio-figma" className="text-blue-500 hover:underline">
+            Cambio de Precio — Figma
+          </a>{' '}
+          para detectar y actualizar precios en tus piezas directamente desde Figma.
+        </p>
       </Section>
 
       {/* Save button */}

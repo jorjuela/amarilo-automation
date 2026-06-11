@@ -323,12 +323,17 @@ export default function TrafficPanel({ projects }: { projects: Project[] }) {
                 return (
                   <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
                     <td className="px-2 py-1">
-                      <input
-                        value={entry?.campaign || ''}
-                        onChange={(e) => setEntry(activeDay, idx, 'campaign', e.target.value)}
-                        className="w-full border-0 bg-transparent text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-300 rounded px-1 py-0.5"
-                        placeholder={idx === 0 ? `${project?.name || ''}` : ''}
-                      />
+                      <div className="flex items-center gap-1">
+                        {entry?.aiGenerated && (
+                          <span className="flex-shrink-0 text-[9px] font-bold px-1 py-0.5 rounded bg-purple-100 text-purple-600 leading-none" title="Generado por IA">IA</span>
+                        )}
+                        <input
+                          value={entry?.campaign || ''}
+                          onChange={(e) => setEntry(activeDay, idx, 'campaign', e.target.value)}
+                          className="w-full border-0 bg-transparent text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-300 rounded px-1 py-0.5"
+                          placeholder={idx === 0 ? `${project?.name || ''}` : ''}
+                        />
+                      </div>
                     </td>
                     <td className="px-2 py-1">
                       <select

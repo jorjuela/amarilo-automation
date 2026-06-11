@@ -240,6 +240,7 @@ export interface TextSource {
   filename: string
   text: string
   isBody?: boolean
+  links?: string[]   // URLs extracted from this email part
 }
 
 export async function extractProject(
@@ -251,9 +252,16 @@ export async function extractProject(
   const bodySource   = sources.find((s) => s.isBody)
   const pdfSources   = sources.filter((s) => !s.isBody && s.text.trim().length > 50)
 
+  // Include links found in email bodies to give Gemini full context
+  const allLinks = sources.flatMap((s) => s.links ?? [])
+  const linksBlock = allLinks.length > 0
+    ? `\n\n=== LINKS ENCONTRADOS EN EL EMAIL ===\n${allLinks.join('\n')}`
+    : ''
+
   const combinedText = [
     bodySource?.text ?? '',
     ...pdfSources.map((s) => `\n\n=== ADJUNTO: ${s.filename} ===\n${s.text}`),
+    linksBlock,
   ].join('\n').trim()
 
   const emptyCampaign: CampaignDetail = {
@@ -334,6 +342,71 @@ export async function extractProject(
     parseSource: 'SUBJECT',
     confidence: 'low',
     missingFields: ['type', 'stage', 'torres', 'monthYear'],
+  }
+}
+
+// ─── Traffic Suggestions ──────────────────────────────────────────────────────
+
+export interface TrafficSuggestion {
+  campaign: string       // e.g. "MOURE - Expectativa | Meta Ads"
+  requirement: string    // e.g. "Desarrollo piezas Meta: Story 9x16 + Post 1x1 + Carrusel"
+  numTexts: number       // estimated copy pieces
+  numGraphics: number    // estimated graphic pieces
+  dayOfWeek: string      // Lunes | Martes | Miércoles | Jueves | Viernes
+  notes: string          // extra context from the brief
+}
+
+const TRAFFIC_PROMPT = `Eres experto en planeación de tráfico interno de una agencia de marketing inmobiliario colombiana.
+Analiza el brief de campaña y genera las tareas de tráfico que el equipo creativo (copy + gráfica) debe ejecutar.
+Responde SOLO con JSON válido — un array de objetos:
+[
+  {
+    "campaign": "NOMBRE_PROYECTO - Etapa | Canal",
+    "requirement": "descripción concreta del requerimiento (qué piezas, qué formato, para qué canal)",
+    "numTexts": 2,
+    "numGraphics": 3,
+    "dayOfWeek": "Lunes",
+    "notes": "nota adicional del brief si aplica"
+  }
+]
+
+Reglas:
+- Crea UNA fila por canal principal (Meta, Google Ads, PMAX, TikTok, Email, WhatsApp, OOH, etc.)
+- numTexts = cantidad de textos/copies estimados para ese canal (1-5)
+- numGraphics = cantidad de piezas gráficas estimadas para ese canal (1-8)
+- dayOfWeek: distribuye las tareas de lunes a viernes en orden lógico (channels digitales primero)
+- campaign debe ser conciso: "[NombreProyecto] - [Etapa] | [Canal]"
+- requirement debe ser específico: incluye formatos (9x16, 1x1, 4x5, banner, etc.) si se mencionan
+- Si no hay información suficiente, genera 2-3 filas genéricas basadas en los canales detectados
+- Máximo 8 filas — prioriza los canales con mayor inversión o más mencionados
+- Responde SOLO el array JSON, sin texto adicional`
+
+export async function extractTrafficSuggestions(
+  combinedText: string,
+  projectName: string,
+  channels: string[],
+): Promise<TrafficSuggestion[]> {
+  if (!process.env.GEMINI_API_KEY || combinedText.trim().length < 50) return []
+  try {
+    const channelHint = channels.length > 0 ? `\nCanales detectados: ${channels.join(', ')}` : ''
+    const prompt = `${TRAFFIC_PROMPT}${channelHint}\n\nProyecto: ${projectName}\n\nBRIEF:\n${combinedText.slice(0, 12000)}`
+    const model = getModel()
+    const result = await model.generateContent(prompt)
+    const raw = result.response.text().trim()
+    const m = raw.match(/```(?:json)?\s*([\s\S]*?)```/) || raw.match(/(\[[\s\S]*\])/)
+    const arr = JSON.parse(m ? m[1] : raw) as Partial<TrafficSuggestion>[]
+    const days = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes']
+    return arr.slice(0, 8).map((s, i) => ({
+      campaign: String(s.campaign || `${projectName} - Campaña`).trim(),
+      requirement: String(s.requirement || '').trim(),
+      numTexts: Math.min(Math.max(Number(s.numTexts) || 1, 0), 10),
+      numGraphics: Math.min(Math.max(Number(s.numGraphics) || 2, 0), 10),
+      dayOfWeek: days.includes(String(s.dayOfWeek || '')) ? String(s.dayOfWeek) : days[i % 5],
+      notes: String(s.notes || '').trim(),
+    }))
+  } catch (err) {
+    console.error('Traffic suggestion extraction failed:', err)
+    return []
   }
 }
 
