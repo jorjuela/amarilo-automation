@@ -1,10 +1,12 @@
 FROM node:20-slim
 
-# System deps: OpenSSL for Prisma + Playwright/Chromium dependencies
+# System deps: OpenSSL for Prisma + Playwright/Chromium
+# libasound2t64 is the Debian Bookworm (node:20-slim) name for libasound2
 RUN apt-get update -y && apt-get install -y \
     openssl \
+    ca-certificates \
     libgtk-3-0 \
-    libasound2 \
+    libasound2t64 \
     libxdamage1 \
     libgbm1 \
     libxkbcommon0 \
@@ -16,6 +18,16 @@ RUN apt-get update -y && apt-get install -y \
     libxtst6 \
     fonts-liberation \
     libx11-xcb1 \
+    libxshmfence1 \
+    libnss3 \
+    libnspr4 \
+    libdbus-1-3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxfixes3 \
+    libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -26,10 +38,12 @@ COPY package*.json ./
 RUN npm ci
 
 # Install Playwright Chromium browser (used for HTML→PNG export)
-RUN npx playwright install chromium
+RUN npx playwright install chromium --with-deps || npx playwright install chromium
 
 COPY . .
-RUN npm run build
+
+# Increase Node memory for Next.js build on Railway
+RUN NODE_OPTIONS="--max-old-space-size=2048" npm run build
 
 # Copy schema to /app/schema/ — a path the Railway volume never mounts.
 RUN mkdir -p /app/schema && cp /app/prisma/schema.prisma /app/schema/schema.prisma
