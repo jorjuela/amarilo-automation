@@ -16,6 +16,7 @@ import {
   extractFramesFromFile,
   exportFigmaFrames,
   type DetectedFrame,
+  type LayerNameOpts,
 } from '@/lib/figma/client'
 import {
   figmaMCPGetData,
@@ -62,11 +63,19 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // ── 1. Figma REST API: raw file data (absolute bounds + price node styles) ──
-    const file = await getFigmaFile(token, fileKey)
-    const frames: DetectedFrame[] = extractFramesFromFile(file)
+    // ── 1. Read configurable layer names from settings ──────────────────────────
+    const settingsRecord = await prisma.settings.findUnique({ where: { id: 'singleton' } })
+    const settingsData = settingsRecord ? JSON.parse(settingsRecord.data) : {}
+    const layerOpts: LayerNameOpts = {
+      priceLayerName: settingsData.figmaLayers?.priceLayerName || 'precio',
+      backgroundLayerName: settingsData.figmaLayers?.backgroundLayerName || 'background',
+    }
 
-    // ── 2. Figma MCP: simplified design (price text hints) ──────────────────────
+    // ── 2. Figma REST API: raw file data (absolute bounds + price node styles) ──
+    const file = await getFigmaFile(token, fileKey)
+    const frames: DetectedFrame[] = extractFramesFromFile(file, layerOpts)
+
+    // ── 3. Figma MCP: simplified design (price text hints) ──────────────────────
     // Run in parallel; MCP failure is non-fatal — we still return REST data.
     let mcpSummaries: MCPFrameSummary[] = []
     try {
@@ -77,7 +86,7 @@ export async function GET(req: NextRequest) {
       console.warn('[figma/route] MCP unavailable, using REST only:', String(mcpErr).slice(0, 200))
     }
 
-    // ── 3. Merge: enrich REST frames with MCP price hints ───────────────────────
+    // ── 4. Merge: enrich REST frames with MCP price hints ───────────────────────
     const mcpByName = new Map(mcpSummaries.map((s) => [s.name, s]))
     const enrichedFrames = frames.map((f) => {
       const mcp = mcpByName.get(f.name)

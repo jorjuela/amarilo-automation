@@ -7,6 +7,7 @@ interface SettingsData {
   googleDrive?: { clientEmail?: string; privateKey?: string; folderId?: string }
   jira?: { boardUrl?: string; projectKey?: string }
   figma?: { token?: string }
+  figmaLayers?: { priceLayerName?: string; backgroundLayerName?: string }
   emailSubjectPattern?: string
   cronEnabled?: boolean
 }
@@ -21,6 +22,11 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
       ...initialSettings.jira,
     },
     figma: { token: '', ...initialSettings.figma },
+    figmaLayers: {
+      priceLayerName: 'precio',
+      backgroundLayerName: 'background',
+      ...initialSettings.figmaLayers,
+    },
     emailSubjectPattern: initialSettings.emailSubjectPattern || 'AMARILO |',
     cronEnabled: initialSettings.cronEnabled ?? false,
   })
@@ -393,6 +399,50 @@ export default function SettingsForm({ initialSettings }: { initialSettings: Set
             Cambio de Precio — Figma
           </a>{' '}
           para detectar y actualizar precios en tus piezas directamente desde Figma.
+        </p>
+      </Section>
+
+      {/* Figma Layer Names */}
+      <Section
+        title="Figma — Nombres de Capas"
+        desc="Configura el nombre exacto de las capas en tus archivos Figma para detección automática"
+        icon="🏷️"
+      >
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              Capa de precio <span className="text-gray-400">(layer name)</span>
+            </label>
+            <input
+              type="text"
+              value={settings.figmaLayers?.priceLayerName || ''}
+              onChange={(e) => update('figmaLayers', 'priceLayerName', e.target.value)}
+              placeholder="precio"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-400 font-mono"
+            />
+            <p className="text-[11px] text-gray-400 mt-1">
+              Nombre del layer de texto en Figma que contiene el precio. Default: <code className="bg-gray-100 px-1 rounded">precio</code>
+            </p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              Capa de fondo <span className="text-gray-400">(layer name)</span>
+            </label>
+            <input
+              type="text"
+              value={settings.figmaLayers?.backgroundLayerName || ''}
+              onChange={(e) => update('figmaLayers', 'backgroundLayerName', e.target.value)}
+              placeholder="background"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-400 font-mono"
+            />
+            <p className="text-[11px] text-gray-400 mt-1">
+              Nombre del layer de fondo/imagen en Figma. Permite reemplazar la imagen de fondo. Default: <code className="bg-gray-100 px-1 rounded">background</code>
+            </p>
+          </div>
+        </div>
+        <p className="text-xs text-gray-400 mt-3">
+          Los nombres son sensibles a mayúsculas y deben coincidir exactamente con el nombre del layer en Figma.
+          También se detectan layers que <em>comiencen o terminen</em> con el nombre configurado para el precio.
         </p>
       </Section>
 

@@ -26,7 +26,9 @@ interface EnrichedFrame extends DetectedFrame {
 
 interface FrameItem {
   frame: EnrichedFrame
-  imageBase64: string | null
+  thumbnail: string | null      // low-res preview (scale 0.3) loaded on file open
+  imageBase64: string | null    // high-res (scale 2) loaded on "Procesar"
+  newBackground: string | null  // user-uploaded replacement for background layer
   priceElements: PriceElement[]
   status: 'idle' | 'exporting' | 'detecting' | 'ready' | 'rendering' | 'done' | 'error'
   error?: string
@@ -89,21 +91,51 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
 
       const items: FrameItem[] = (data.frames as EnrichedFrame[]).map((f) => ({
         frame: f,
+        thumbnail: null,
         imageBase64: null,
+        newBackground: null,
         priceElements: [],
         status: 'idle',
         newPrice: '',
-        // Pre-select frames that have REST price nodes OR MCP price hints
         selected: f.priceNodes.length > 0 || (f.mcpHasPriceHints ?? false),
       }))
       setFrames(items)
 
       const first = items.find((i) => i.frame.priceNodes.length > 0 || i.frame.mcpHasPriceHints)
       if (first) setActiveFrameId(first.frame.id)
+
+      // Load thumbnails in background — doesn't block the UI
+      loadThumbnails(data.fileKey, items)
     } catch (err) {
       setLoadError(String(err))
     } finally {
       setLoading(false)
+    }
+  }
+
+  // ── Thumbnail loader (low-res, batched, non-blocking) ────────────────────
+  // Batches of 10 frames at scale=0.3 so the list shows previews progressively.
+
+  async function loadThumbnails(key: string, items: FrameItem[]) {
+    const BATCH = 10
+    for (let i = 0; i < items.length; i += BATCH) {
+      const batch = items.slice(i, i + BATCH)
+      try {
+        const res = await fetch('/api/figma', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileKey: key, frameIds: batch.map((b) => b.frame.id), scale: 0.3 }),
+        })
+        if (!res.ok) break
+        const data = await res.json() as { images: Record<string, string> }
+        setFrames((prev) =>
+          prev.map((f) =>
+            data.images[f.frame.id] ? { ...f, thumbnail: data.images[f.frame.id] } : f
+          )
+        )
+      } catch {
+        break // thumbnails are optional — silently ignore errors
+      }
     }
   }
 
@@ -225,7 +257,9 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
 
     try {
       const { width, height } = item.frame.bounds
-      const html = buildPriceHtml(item.imageBase64, item.priceElements, item.newPrice, width, height)
+      // Use user-uploaded background if available, otherwise use the full frame export
+      const bgImage = item.newBackground || item.imageBase64
+      const html = buildPriceHtml(bgImage, item.priceElements, item.newPrice, width, height, !!item.newBackground)
 
       const exportRes = await fetch('/api/price-pieces/export', {
         method: 'POST',
@@ -442,6 +476,11 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
                   )
                 }
                 onRender={() => renderFrame(activeFrame.frame.id)}
+                onBackgroundChange={(bg) =>
+                  setFrames((prev) =>
+                    prev.map((f) => f.frame.id === activeFrame.frame.id ? { ...f, newBackground: bg } : f)
+                  )
+                }
               />
             ) : (
               <div className="card p-8 text-center text-gray-400 text-sm">
@@ -479,39 +518,59 @@ function FrameCard({
   return (
     <div
       onClick={onClick}
-      className={`card p-3 cursor-pointer transition-all ${isActive ? 'ring-2 ring-blue-400' : 'hover:ring-1 hover:ring-gray-200'}`}
+      className={`card overflow-hidden cursor-pointer transition-all ${isActive ? 'ring-2 ring-blue-400' : 'hover:ring-1 hover:ring-gray-200'}`}
     >
-      <div className="flex items-start gap-2">
+      {/* Thumbnail strip */}
+      <div className="relative w-full h-24 bg-gray-100 overflow-hidden">
+        {item.exportedPng ? (
+          <img src={item.exportedPng} alt="" className="w-full h-full object-cover" />
+        ) : item.thumbnail ? (
+          <img src={item.thumbnail} alt="" className="w-full h-full object-cover" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <span className="text-[10px] text-gray-300 animate-pulse">cargando...</span>
+          </div>
+        )}
+        {/* Overlay badges */}
+        <div className="absolute top-1 left-1 flex gap-1 flex-wrap">
+          {item.frame.priceNodes.length > 0 && (
+            <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/90 text-white font-bold">
+              {item.frame.priceNodes.length} precio{item.frame.priceNodes.length !== 1 ? 's' : ''}
+            </span>
+          )}
+          {item.frame.mcpHasPriceHints && item.frame.priceNodes.length === 0 && (
+            <span className="text-[9px] px-1 py-0.5 rounded bg-purple-500/90 text-white font-bold">MCP</span>
+          )}
+        </div>
+        {item.status === 'done' && (
+          <div className="absolute inset-0 bg-emerald-500/20 flex items-center justify-center">
+            <span className="text-emerald-600 text-2xl font-bold">✓</span>
+          </div>
+        )}
+        {(item.status === 'exporting' || item.status === 'detecting' || item.status === 'rendering') && (
+          <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+            <div className="w-5 h-5 border-2 border-white/50 border-t-white rounded-full animate-spin" />
+          </div>
+        )}
+        {/* Checkbox */}
         <input
           type="checkbox"
           checked={item.selected}
           onChange={(e) => { e.stopPropagation(); onSelect() }}
           onClick={(e) => e.stopPropagation()}
-          className="mt-0.5 rounded"
+          className="absolute top-1 right-1 rounded"
         />
-        <div className="flex-1 min-w-0">
-          <p className="text-xs font-semibold text-gray-800 truncate">{item.frame.name}</p>
-          <p className="text-xs text-gray-400 truncate">{item.frame.pageName}</p>
-          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${STATUS_COLOR[item.status]}`}>
-              {STATUS_LABEL[item.status]}
-            </span>
-            {item.frame.priceNodes.length > 0 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">
-                {item.frame.priceNodes.length}px
-              </span>
-            )}
-            {item.frame.mcpHasPriceHints && (
-              <span
-                className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-medium"
-                title={`MCP detectó: ${item.frame.mcpPriceHints?.join(', ')}`}
-              >
-                MCP
-              </span>
-            )}
-          </div>
+      </div>
+
+      {/* Name + status */}
+      <div className="px-2 py-1.5">
+        <p className="text-xs font-semibold text-gray-800 truncate leading-tight">{item.frame.name}</p>
+        <div className="flex items-center gap-1 mt-0.5">
+          <span className={`text-[9px] px-1 py-0.5 rounded font-medium ${STATUS_COLOR[item.status]}`}>
+            {STATUS_LABEL[item.status]}
+          </span>
+          <span className="text-[9px] text-gray-400 truncate">{item.frame.pageName}</span>
         </div>
-        {item.status === 'done' && <span className="text-emerald-500 text-sm flex-shrink-0">✓</span>}
       </div>
     </div>
   )
@@ -520,13 +579,22 @@ function FrameCard({
 // ─── FrameDetail ──────────────────────────────────────────────────────────────
 
 function FrameDetail({
-  item, onPriceChange, onRender,
+  item, onPriceChange, onRender, onBackgroundChange,
 }: {
   item: FrameItem
   onPriceChange: (p: string) => void
   onRender: () => void
+  onBackgroundChange: (b: string | null) => void
 }) {
   const isProcessing = item.status === 'exporting' || item.status === 'detecting' || item.status === 'rendering'
+
+  function handleBgUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => onBackgroundChange(reader.result as string)
+    reader.readAsDataURL(file)
+  }
 
   return (
     <div className="card overflow-hidden">
@@ -534,6 +602,11 @@ function FrameDetail({
         <div>
           <span className="font-semibold text-gray-800 text-sm">{item.frame.name}</span>
           <span className="text-gray-400 text-xs ml-2">{item.frame.pageName}</span>
+          {item.newBackground && (
+            <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-medium">
+              Fondo reemplazado
+            </span>
+          )}
         </div>
         <span className="text-xs text-gray-400 font-mono">
           {Math.round(item.frame.bounds.width)} × {Math.round(item.frame.bounds.height)} px
@@ -545,7 +618,7 @@ function FrameDetail({
         <div className="flex-shrink-0">
           {item.status === 'done' && item.exportedPng ? (
             <div className="space-y-2">
-              <p className="text-xs font-semibold text-emerald-700">Resultado con nuevo precio:</p>
+              <p className="text-xs font-semibold text-emerald-700">Resultado:</p>
               <img
                 src={item.exportedPng}
                 alt={item.frame.name}
@@ -562,12 +635,12 @@ function FrameDetail({
           ) : item.imageBase64 ? (
             <div className="relative">
               <img
-                src={item.imageBase64}
+                src={item.newBackground || item.imageBase64}
                 alt={item.frame.name}
                 className="max-w-[220px] max-h-[300px] object-contain rounded border border-gray-200"
               />
-              {/* Price highlight overlays */}
-              {item.priceElements.map((el) => (
+              {/* Price highlight overlays — always based on original imageBase64 positions */}
+              {!item.newBackground && item.priceElements.map((el) => (
                 <div
                   key={el.id}
                   className="absolute border-2 border-yellow-400 bg-yellow-400/20 rounded pointer-events-none"
@@ -583,13 +656,22 @@ function FrameDetail({
               ))}
             </div>
           ) : (
-            <div className="w-[180px] h-[240px] bg-gray-100 rounded flex items-center justify-center">
-              {isProcessing ? (
+            <div
+              className="w-[180px] h-[220px] bg-gray-100 rounded flex flex-col items-center justify-center overflow-hidden relative"
+            >
+              {item.thumbnail ? (
+                <img src={item.thumbnail} alt="" className="w-full h-full object-cover" />
+              ) : isProcessing ? (
                 <span className="text-xs text-gray-400 animate-pulse">
                   {item.status === 'exporting' ? 'Exportando...' : 'Analizando...'}
                 </span>
               ) : (
-                <span className="text-xs text-gray-400">Sin imagen</span>
+                <span className="text-xs text-gray-400">Preview</span>
+              )}
+              {isProcessing && (
+                <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+                  <div className="w-6 h-6 border-2 border-white/50 border-t-white rounded-full animate-spin" />
+                </div>
               )}
             </div>
           )}
@@ -597,6 +679,42 @@ function FrameDetail({
 
         {/* Controls */}
         <div className="flex-1 space-y-4">
+          {/* Background replacement */}
+          {(item.frame.backgroundNode || item.imageBase64) && (
+            <div>
+              <p className="text-xs font-semibold text-gray-700 mb-1.5 flex items-center gap-1.5">
+                Imagen de fondo
+                {item.frame.backgroundNode && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-medium">
+                    layer: {item.frame.backgroundNode.name}
+                  </span>
+                )}
+              </p>
+              <div className="flex items-center gap-2">
+                <label className="flex-1 cursor-pointer">
+                  <div className={`border border-dashed rounded-lg px-3 py-2 text-xs text-center transition-colors ${item.newBackground ? 'border-teal-400 bg-teal-50 text-teal-700' : 'border-gray-300 text-gray-500 hover:border-gray-400'}`}>
+                    {item.newBackground ? '✓ Nueva imagen cargada' : 'Subir imagen de reemplazo…'}
+                  </div>
+                  <input type="file" accept="image/*" onChange={handleBgUpload} className="sr-only" />
+                </label>
+                {item.newBackground && (
+                  <button
+                    onClick={() => onBackgroundChange(null)}
+                    className="text-xs px-2 py-1.5 rounded border border-gray-200 text-gray-500 hover:bg-gray-50"
+                    title="Quitar imagen"
+                  >
+                    Quitar
+                  </button>
+                )}
+              </div>
+              {item.newBackground && (
+                <p className="text-[11px] text-gray-400 mt-1">
+                  El resultado final usará esta imagen como fondo, con el precio superpuesto en la misma posición.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Detected prices */}
           {item.priceElements.length > 0 && (
             <div>
@@ -687,6 +805,7 @@ function buildPriceHtml(
   newPrice: string,
   width: number,
   height: number,
+  _isReplacedBackground = false,
 ): string {
   const overlays = priceElements.map((el) => `<div style="
     position: absolute;

@@ -57,11 +57,18 @@ export interface FigmaFile {
   }
 }
 
+export interface BackgroundNode {
+  id: string
+  name: string
+  bounds: FigmaBounds
+}
+
 export interface DetectedFrame {
   id: string
   name: string
   bounds: FigmaBounds
   priceNodes: PriceNode[]
+  backgroundNode?: BackgroundNode
   pageId: string
   pageName: string
 }
@@ -85,7 +92,40 @@ export function parseFigmaUrl(url: string): string | null {
   return m ? m[1] : null
 }
 
-// ─── Price detection heuristics ───────────────────────────────────────────────
+// ─── Price layer detection ────────────────────────────────────────────────────
+// Primary: layer named "precio" (or variants) — explicit Figma convention.
+// Fallback: TEXT content matching price number patterns.
+
+const PRICE_LAYER_NAMES = new Set([
+  'precio', 'price', 'valor', 'tarifa', 'costo', 'monto',
+  'precio base', 'precio final', 'precio desde', 'desde precio',
+])
+
+function isPriceLayerName(name: string, configuredName = 'precio'): boolean {
+  const n = name.trim().toLowerCase()
+  const c = configuredName.trim().toLowerCase()
+  return PRICE_LAYER_NAMES.has(n) || n === c || n.startsWith(c) || n.endsWith(c)
+}
+
+function findBackgroundNode(
+  node: FigmaNode,
+  layerName: string,
+  depth = 0,
+): BackgroundNode | undefined {
+  if (depth > 6) return undefined
+  const n = (node.name || '').trim().toLowerCase()
+  const target = layerName.trim().toLowerCase()
+  if (n === target && node.absoluteBoundingBox) {
+    return { id: node.id, name: node.name, bounds: node.absoluteBoundingBox }
+  }
+  if (node.children) {
+    for (const child of node.children) {
+      const found = findBackgroundNode(child, layerName, depth + 1)
+      if (found) return found
+    }
+  }
+  return undefined
+}
 
 const PRICE_PATTERNS = [
   /^\$[\d.,]+/,                      // $450.000.000
@@ -93,7 +133,6 @@ const PRICE_PATTERNS = [
   /^\d[\d.,]*\s*SMMLV\b/i,           // 235 SMMLV
   /desde\s*\$[\d.,]+/i,              // Desde $450.000.000
   /^[\d.,]+\s*(?:mil|K)\b/i,         // 450 mil
-  /precio.*\$[\d.,]+/i,              // precio $xxx
 ]
 
 function looksLikePrice(text: string): boolean {
@@ -102,27 +141,55 @@ function looksLikePrice(text: string): boolean {
   return PRICE_PATTERNS.some((p) => p.test(t))
 }
 
-// ─── Walk node tree for TEXT nodes matching price patterns ────────────────────
+// ─── Walk node tree for price nodes ──────────────────────────────────────────
+// Matches TEXT nodes by layer name first, then by text content as fallback.
+// Also enters GROUP/FRAME nodes whose layer name matches "precio" to capture
+// compound price components (e.g. a group named "precio" containing text).
 
-function walkForPriceNodes(node: FigmaNode, frameBounds: FigmaBounds): PriceNode[] {
+function walkForPriceNodes(
+  node: FigmaNode,
+  frameBounds: FigmaBounds,
+  configuredPriceLayerName = 'precio',
+): PriceNode[] {
   const results: PriceNode[] = []
 
-  if (node.type === 'TEXT' && node.characters && looksLikePrice(node.characters)) {
-    const bounds = node.absoluteBoundingBox || { x: 0, y: 0, width: 100, height: 20 }
-    const fill = node.fills?.find((f) => f.type === 'SOLID' && f.color)
-    results.push({
-      id: node.id,
-      name: node.name,
-      text: node.characters,
-      bounds,
-      style: node.style || { fontFamily: 'Inter', fontWeight: 700, fontSize: 24 },
-      color: fill?.color || { r: 1, g: 1, b: 1, a: 1 },
-    })
+  if (node.type === 'TEXT') {
+    const byName = isPriceLayerName(node.name || '', configuredPriceLayerName)
+    const byContent = node.characters ? looksLikePrice(node.characters) : false
+
+    if (byName || byContent) {
+      const bounds = node.absoluteBoundingBox || { x: 0, y: 0, width: 100, height: 20 }
+      const fill = node.fills?.find((f) => f.type === 'SOLID' && f.color)
+      results.push({
+        id: node.id,
+        name: node.name,
+        text: node.characters || '',
+        bounds,
+        style: node.style || { fontFamily: 'Inter', fontWeight: 700, fontSize: 24 },
+        color: fill?.color || { r: 1, g: 1, b: 1, a: 1 },
+      })
+      return results // found it — no need to walk children of a TEXT node
+    }
   }
 
   if (node.children) {
+    // If this GROUP/FRAME is named "precio" (or configured name), collect ALL its text children
+    const isNamedPrice = isPriceLayerName(node.name || '', configuredPriceLayerName)
     for (const child of node.children) {
-      results.push(...walkForPriceNodes(child, frameBounds))
+      if (isNamedPrice && child.type === 'TEXT') {
+        const bounds = child.absoluteBoundingBox || { x: 0, y: 0, width: 100, height: 20 }
+        const fill = child.fills?.find((f) => f.type === 'SOLID' && f.color)
+        results.push({
+          id: child.id,
+          name: child.name,
+          text: child.characters || '',
+          bounds,
+          style: child.style || { fontFamily: 'Inter', fontWeight: 700, fontSize: 24 },
+          color: fill?.color || { r: 1, g: 1, b: 1, a: 1 },
+        })
+      } else {
+        results.push(...walkForPriceNodes(child, frameBounds, configuredPriceLayerName))
+      }
     }
   }
 
@@ -131,11 +198,16 @@ function walkForPriceNodes(node: FigmaNode, frameBounds: FigmaBounds): PriceNode
 
 // ─── Build DetectedFrames list from Figma file ────────────────────────────────
 
-export function extractFramesFromFile(file: FigmaFile): DetectedFrame[] {
+export interface LayerNameOpts {
+  priceLayerName?: string
+  backgroundLayerName?: string
+}
+
+export function extractFramesFromFile(file: FigmaFile, opts?: LayerNameOpts): DetectedFrame[] {
   const frames: DetectedFrame[] = []
 
   for (const page of file.document.children) {
-    collectTopLevelFrames(page.children, page, frames)
+    collectTopLevelFrames(page.children, page, frames, 0, opts)
   }
 
   return frames
@@ -148,8 +220,12 @@ function collectTopLevelFrames(
   page: FigmaPage,
   out: DetectedFrame[],
   sectionDepth = 0,
+  opts?: LayerNameOpts,
 ) {
   if (sectionDepth > 4) return // safety guard against deeply nested groups
+
+  const priceName = opts?.priceLayerName || 'precio'
+  const bgName = opts?.backgroundLayerName || 'background'
 
   for (const node of nodes) {
     if (node.visible === false) continue
@@ -160,7 +236,8 @@ function collectTopLevelFrames(
         id: node.id,
         name: node.name,
         bounds,
-        priceNodes: walkForPriceNodes(node, bounds),
+        priceNodes: walkForPriceNodes(node, bounds, priceName),
+        backgroundNode: node.children ? findBackgroundNode(node, bgName) : undefined,
         pageId: page.id,
         pageName: page.name,
       })
@@ -169,7 +246,7 @@ function collectTopLevelFrames(
       node.children?.length
     ) {
       // Sections/groups are containers — recurse to find the actual frames inside
-      collectTopLevelFrames(node.children, page, out, sectionDepth + 1)
+      collectTopLevelFrames(node.children, page, out, sectionDepth + 1, opts)
     }
   }
 }
