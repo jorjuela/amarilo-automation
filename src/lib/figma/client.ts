@@ -135,23 +135,43 @@ export function extractFramesFromFile(file: FigmaFile): DetectedFrame[] {
   const frames: DetectedFrame[] = []
 
   for (const page of file.document.children) {
-    for (const node of page.children) {
-      if (node.type !== 'FRAME' && node.type !== 'COMPONENT' && node.type !== 'INSTANCE') continue
-      if (node.visible === false) continue
-      const bounds = node.absoluteBoundingBox || { x: 0, y: 0, width: 540, height: 960 }
-      const priceNodes = walkForPriceNodes(node, bounds)
-      frames.push({
-        id: node.id,
-        name: node.name,
-        bounds,
-        priceNodes,
-        pageId: page.id,
-        pageName: page.name,
-      })
-    }
+    collectTopLevelFrames(page.children, page, frames)
   }
 
   return frames
+}
+
+// Walk one level of nodes. Enters SECTION/GROUP to find nested frames
+// but does NOT recurse into FRAME children (those are design elements, not pieces).
+function collectTopLevelFrames(
+  nodes: FigmaNode[],
+  page: FigmaPage,
+  out: DetectedFrame[],
+  sectionDepth = 0,
+) {
+  if (sectionDepth > 4) return // safety guard against deeply nested groups
+
+  for (const node of nodes) {
+    if (node.visible === false) continue
+
+    if (node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE') {
+      const bounds = node.absoluteBoundingBox || { x: 0, y: 0, width: 540, height: 960 }
+      out.push({
+        id: node.id,
+        name: node.name,
+        bounds,
+        priceNodes: walkForPriceNodes(node, bounds),
+        pageId: page.id,
+        pageName: page.name,
+      })
+    } else if (
+      (node.type === 'SECTION' || node.type === 'GROUP' || node.type === 'COMPONENT_SET') &&
+      node.children?.length
+    ) {
+      // Sections/groups are containers — recurse to find the actual frames inside
+      collectTopLevelFrames(node.children, page, out, sectionDepth + 1)
+    }
+  }
 }
 
 // ─── API calls ────────────────────────────────────────────────────────────────
@@ -168,8 +188,8 @@ async function figmaFetch<T>(token: string, path: string): Promise<T> {
 }
 
 export async function getFigmaFile(token: string, fileKey: string): Promise<FigmaFile> {
-  // depth=3 avoids fetching deeply nested vector nodes — keeps response fast
-  return figmaFetch<FigmaFile>(token, `/files/${fileKey}?depth=4`)
+  // depth=6: doc→page→section→frame→children→text — needed for files with Sections
+  return figmaFetch<FigmaFile>(token, `/files/${fileKey}?depth=6`)
 }
 
 export async function exportFigmaFrames(
