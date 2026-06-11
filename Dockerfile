@@ -1,12 +1,12 @@
 FROM node:20-bookworm-slim
 
 # System deps: OpenSSL for Prisma + Playwright/Chromium
-# libasound2t64 is the Debian Bookworm (node:20-slim) name for libasound2
+# libasound2t64 is Debian Trixie; on Bookworm the package is still libasound2
 RUN apt-get update -y && apt-get install -y \
     openssl \
     ca-certificates \
     libgtk-3-0 \
-    libasound2t64 \
+    libasound2 \
     libxdamage1 \
     libgbm1 \
     libxkbcommon0 \
