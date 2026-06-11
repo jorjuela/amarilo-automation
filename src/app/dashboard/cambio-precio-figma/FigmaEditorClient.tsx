@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { DetectedFrame } from '@/lib/figma/client'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -37,6 +37,8 @@ interface FrameItem {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
+const LS_KEY = 'figma_last_url'
+
 export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: boolean }) {
   const [fileUrl, setFileUrl] = useState('')
   const [fileKey, setFileKey] = useState('')
@@ -49,6 +51,18 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
   const [activeFrameId, setActiveFrameId] = useState<string | null>(null)
   const [processing, setProcessing] = useState(false)
 
+  // Restore last used URL from localStorage or ?url= query param on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const queryUrl = params.get('url') || params.get('fileUrl')
+    if (queryUrl) {
+      setFileUrl(queryUrl)
+      return
+    }
+    const saved = localStorage.getItem(LS_KEY)
+    if (saved) setFileUrl(saved)
+  }, [])
+
   const activeFrame = frames.find((f) => f.frame.id === activeFrameId) || null
 
   // ── Load Figma file (hybrid: MCP enriched + REST coordinates) ────────────
@@ -60,6 +74,9 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     setFrames([])
     setActiveFrameId(null)
     setMcpAvailable(false)
+
+    // Persist URL so it's available next visit
+    localStorage.setItem(LS_KEY, fileUrl.trim())
 
     try {
       const res = await fetch(`/api/figma?fileUrl=${encodeURIComponent(fileUrl)}`)
@@ -280,21 +297,35 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     <div className="space-y-4">
       {/* File URL input */}
       <div className="card p-4">
-        <label className="block text-xs font-semibold text-gray-700 mb-2">URL del archivo Figma</label>
+        <div className="flex items-center justify-between mb-2">
+          <label className="text-xs font-semibold text-gray-700">URL del archivo Figma</label>
+          <span className="text-[10px] text-gray-400">
+            Copia la URL desde Figma — funciona con /file/ y /design/
+          </span>
+        </div>
         <div className="flex gap-2">
-          <input
-            type="url"
-            value={fileUrl}
-            onChange={(e) => setFileUrl(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleLoadFile()}
-            placeholder="https://www.figma.com/file/XXXXX/Mi-Proyecto"
-            className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-400"
-            disabled={!hasFigmaToken}
-          />
+          <div className="relative flex-1">
+            <input
+              type="url"
+              value={fileUrl}
+              onChange={(e) => setFileUrl(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleLoadFile()}
+              placeholder="https://www.figma.com/design/XXXXX/nombre-proyecto?node-id=..."
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-400 pr-7"
+              disabled={!hasFigmaToken}
+            />
+            {fileUrl && (
+              <button
+                onClick={() => { setFileUrl(''); localStorage.removeItem(LS_KEY); setFrames([]); setFileName('') }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500 text-base leading-none"
+                title="Limpiar"
+              >×</button>
+            )}
+          </div>
           <button
             onClick={handleLoadFile}
             disabled={loading || !fileUrl.trim() || !hasFigmaToken}
-            className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
           >
             {loading ? 'Cargando...' : 'Cargar Archivo'}
           </button>
