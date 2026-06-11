@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM node:20-bookworm-slim
 
 # System deps: OpenSSL for Prisma + Playwright/Chromium
 # libasound2t64 is the Debian Bookworm (node:20-slim) name for libasound2
