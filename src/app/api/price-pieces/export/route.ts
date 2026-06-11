@@ -28,7 +28,12 @@ export async function POST(req: NextRequest) {
       const page = await browser.newPage()
       await page.setViewportSize({ width, height })
       await page.setContent(html, { waitUntil: 'networkidle', timeout: 20000 })
-      await page.waitForTimeout(1000)   // wait for fonts / base64 images
+      // If HTML uses canvas + __ready signal, wait for it; otherwise fixed timeout for fonts
+      const usesCanvas = html.includes('window.__ready')
+      if (usesCanvas) {
+        await page.waitForFunction(() => (window as unknown as Record<string, unknown>).__ready === true, { timeout: 10000 }).catch(() => {})
+      }
+      await page.waitForTimeout(600)   // wait for fonts / base64 images to render
 
       const imgFormat = format === 'jpeg' ? 'jpeg' : 'png'
       const screenshot = await page.screenshot({

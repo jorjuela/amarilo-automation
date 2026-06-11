@@ -275,6 +275,64 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     )
   }
 
+  // ── Apply price to all frames AND render all simultaneously ───────────────
+
+  async function applyAndRenderAll() {
+    if (!globalPrice.trim()) return
+    const targets = frames.filter(
+      (f) => f.selected && (f.status === 'ready' || f.status === 'done') && f.priceElements.length > 0
+    )
+    if (targets.length === 0) return
+
+    // Set price on all at once, then render in parallel
+    setFrames((prev) =>
+      prev.map((f) =>
+        targets.some((t) => t.frame.id === f.frame.id) ? { ...f, newPrice: globalPrice } : f
+      )
+    )
+
+    // Use the updated price from globalPrice (state update may be async, so pass directly)
+    await Promise.all(
+      targets.map(async (item) => {
+        if (!item.imageBase64 || item.priceElements.length === 0) return
+        setFrames((prev) => prev.map((f) => f.frame.id === item.frame.id ? { ...f, status: 'rendering' } : f))
+        try {
+          const { width, height, x: frameX, y: frameY } = item.frame.bounds
+          let backgroundBounds: { top: number; left: number; widthPct: number; heightPct: number } | null = null
+          if (item.frame.backgroundNode) {
+            const bg = item.frame.backgroundNode.bounds
+            backgroundBounds = {
+              top:      (bg.y - frameY) / height * 100,
+              left:     (bg.x - frameX) / width  * 100,
+              widthPct:  bg.width  / width  * 100,
+              heightPct: bg.height / height * 100,
+            }
+          }
+          const html = buildPriceHtml(
+            item.imageBase64, item.priceElements, globalPrice,
+            width, height, item.newBackground, backgroundBounds, item.backgroundImageBase64,
+          )
+          const res = await fetch('/api/price-pieces/export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ html, width, height, format: 'png' }),
+          })
+          if (!res.ok) throw new Error('Export failed')
+          const pngUrl = URL.createObjectURL(await res.blob())
+          setFrames((prev) =>
+            prev.map((f) => f.frame.id === item.frame.id
+              ? { ...f, newPrice: globalPrice, status: 'done', exportedPng: pngUrl } : f)
+          )
+        } catch (err) {
+          setFrames((prev) =>
+            prev.map((f) => f.frame.id === item.frame.id
+              ? { ...f, status: 'error', error: String(err) } : f)
+          )
+        }
+      })
+    )
+  }
+
   // ── Render one frame with new price ──────────────────────────────────────
 
   async function renderFrame(frameId: string) {
@@ -306,6 +364,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
         height,
         item.newBackground,
         backgroundBounds,
+        item.backgroundImageBase64,
       )
 
       const exportRes = await fetch('/api/price-pieces/export', {
@@ -368,9 +427,13 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
 
   // ── Derived counts ────────────────────────────────────────────────────────
 
-  const selectedCount = frames.filter((f) => f.selected).length
-  const readyCount    = frames.filter((f) => f.status === 'ready').length
-  const doneCount     = frames.filter((f) => f.status === 'done').length
+  const selectedCount  = frames.filter((f) => f.selected).length
+  const readyCount     = frames.filter((f) => f.status === 'ready').length
+  const doneCount      = frames.filter((f) => f.status === 'done').length
+  const renderingCount = frames.filter((f) => f.status === 'rendering').length
+  const batchTargets   = frames.filter(
+    (f) => f.selected && (f.status === 'ready' || f.status === 'done') && f.priceElements.length > 0
+  ).length
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
@@ -474,42 +537,51 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
           {/* Right panel: detail */}
           <div className="flex-1 space-y-3">
             {readyCount > 0 && (
-              <div className="card p-4 flex items-end gap-3 flex-wrap">
-                <div className="flex-1 min-w-48">
+              <div className="card p-4 space-y-3">
+                {/* Batch price input */}
+                <div>
                   <label className="block text-xs font-semibold text-gray-700 mb-1">
-                    Nuevo precio — aplicar a todos los frames seleccionados
+                    Cambiar precio a todas las piezas seleccionadas ({batchTargets})
                   </label>
-                  <input
-                    type="text"
-                    value={globalPrice}
-                    onChange={(e) => setGlobalPrice(e.target.value)}
-                    placeholder="Ej: $520.000.000"
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-400"
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={globalPrice}
+                      onChange={(e) => setGlobalPrice(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && applyAndRenderAll()}
+                      placeholder="Ej: $520.000.000"
+                      className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-400"
+                    />
+                    <button
+                      onClick={applyAndRenderAll}
+                      disabled={!globalPrice.trim() || batchTargets === 0 || renderingCount > 0}
+                      className="px-5 py-2 text-white rounded-lg text-sm font-semibold hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
+                      style={{ background: 'var(--amarilo-navy)' }}
+                    >
+                      {renderingCount > 0
+                        ? `Generando ${renderingCount}...`
+                        : `Generar ${batchTargets} piezas`}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-gray-400 mt-1">
+                    Aplica el precio y genera todas las piezas simultáneamente · Enter para confirmar
+                  </p>
                 </div>
-                <button
-                  onClick={applyGlobalPrice}
-                  disabled={!globalPrice.trim()}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-                >
-                  Aplicar a todos
-                </button>
-                <button
-                  onClick={renderAllSelected}
-                  disabled={frames.filter((f) => f.selected && f.status === 'ready' && f.newPrice.trim()).length === 0}
-                  className="px-4 py-2 text-white rounded-lg text-sm font-medium hover:opacity-90"
-                  style={{ background: 'var(--amarilo-navy)' }}
-                >
-                  Generar todos
-                </button>
+
+                {/* Download */}
                 {doneCount > 0 && (
-                  <button
-                    onClick={downloadAll}
-                    className="px-4 py-2 text-white rounded-lg text-sm font-medium hover:opacity-90"
-                    style={{ background: 'var(--amarilo-yellow)', color: '#1B3D6B' }}
-                  >
-                    Descargar ZIP ({doneCount})
-                  </button>
+                  <div className="flex items-center gap-2 pt-1 border-t border-gray-100">
+                    <span className="text-xs text-emerald-700 font-medium">
+                      {doneCount} {doneCount === 1 ? 'pieza generada' : 'piezas generadas'}
+                    </span>
+                    <button
+                      onClick={downloadAll}
+                      className="ml-auto px-4 py-2 text-sm font-semibold rounded-lg hover:opacity-90"
+                      style={{ background: 'var(--amarilo-yellow)', color: '#1B3D6B' }}
+                    >
+                      Descargar ZIP ({doneCount})
+                    </button>
+                  </div>
                 )}
               </div>
             )}
@@ -869,10 +941,17 @@ function FrameDetail({
 }
 
 // ─── HTML builder for Playwright rendering ────────────────────────────────────
-// When newBackground is provided and backgroundBounds are known, uses an SVG
-// mask to cut the background area from the frame export, allowing the new
-// background image to show through — preserving all other frame layers.
-// When no backgroundBounds: new background replaces the entire frame background.
+// Strategy:
+// 1. Background layer (z-index 1): background image (newBackground or backgroundImageBase64)
+//    positioned at backgroundNode bounds — fills the holes punched by the SVG mask.
+// 2. Frame export (z-index 2): SVG mask cuts TWO kinds of areas:
+//    a) The background node area (so background image shows through)
+//    b) All price element areas (so old price text is hidden, background shows through)
+// 3. New price overlays (z-index 3): drawn over the cleared price areas.
+//
+// Without background image: falls back to canvas-based color sampling to cover old prices.
+
+const PRICE_MASK_PAD = 6 // px padding around each price element in the mask
 
 function buildPriceHtml(
   frameBase64: string,
@@ -882,80 +961,109 @@ function buildPriceHtml(
   height: number,
   newBackground: string | null = null,
   backgroundBounds: { top: number; left: number; widthPct: number; heightPct: number } | null = null,
+  backgroundImageBase64: string | null = null,
 ): string {
+  const effectiveBg = newBackground || backgroundImageBase64
+
+  // Price element bounding boxes in px (with padding so mask fully covers the text)
+  const priceRectsPx = priceElements.map((el) => ({
+    x: Math.max(0, Math.round(el.left / 100 * width) - PRICE_MASK_PAD),
+    y: Math.max(0, Math.round(el.top  / 100 * height) - PRICE_MASK_PAD),
+    w: Math.min(width,  Math.round(el.widthPct  / 100 * width)  + PRICE_MASK_PAD * 2),
+    h: Math.min(height, Math.round(el.heightPct / 100 * height) + PRICE_MASK_PAD * 2),
+  }))
+
+  // Price text overlays (always z-index 3, same position regardless of strategy)
   const overlays = priceElements.map((el) => `<div style="
-    position: absolute; z-index: 3;
-    top: ${el.top.toFixed(3)}%;
-    left: ${el.left.toFixed(3)}%;
-    width: ${el.widthPct.toFixed(3)}%;
-    min-width: max-content;
-    font-family: '${el.fontFamily}', 'Helvetica Neue', Arial, sans-serif;
-    font-size: ${el.fontSize}px;
-    font-weight: ${el.fontWeight};
-    color: ${el.color};
-    white-space: nowrap;
-    line-height: 1.15;
-    text-rendering: geometricPrecision;
-    -webkit-font-smoothing: antialiased;
+    position:absolute; z-index:3;
+    top:${el.top.toFixed(3)}%; left:${el.left.toFixed(3)}%;
+    width:${el.widthPct.toFixed(3)}%; min-width:max-content;
+    font-family:'${el.fontFamily}','Helvetica Neue',Arial,sans-serif;
+    font-size:${el.fontSize}px; font-weight:${el.fontWeight};
+    color:${el.color}; white-space:nowrap; line-height:1.15;
+    text-rendering:geometricPrecision; -webkit-font-smoothing:antialiased;
   ">${escHtml(newPrice)}</div>`).join('\n')
 
-  let backgroundLayer = ''
-  let frameStyle = 'position:absolute;inset:0;width:100%;height:100%;z-index:2;display:block;'
-
-  if (newBackground && backgroundBounds) {
-    // Replacement background at exact background node position
-    backgroundLayer = `<img style="
-      position:absolute; z-index:1;
-      top:${backgroundBounds.top.toFixed(3)}%;
-      left:${backgroundBounds.left.toFixed(3)}%;
-      width:${backgroundBounds.widthPct.toFixed(3)}%;
-      height:${backgroundBounds.heightPct.toFixed(3)}%;
-      object-fit:cover; display:block;
-    " src="${newBackground}" />`
-
-    // SVG mask: white = show, black = hide.
-    // Cuts the background node area from the frame export so new bg shows through.
+  // ── Strategy A: SVG mask (requires background image) ───────────────────────
+  if (effectiveBg && backgroundBounds) {
     const bgPx = {
-      x: Math.round(backgroundBounds.left   / 100 * width),
-      y: Math.round(backgroundBounds.top    / 100 * height),
-      w: Math.round(backgroundBounds.widthPct  / 100 * width),
+      x: Math.round(backgroundBounds.left     / 100 * width),
+      y: Math.round(backgroundBounds.top      / 100 * height),
+      w: Math.round(backgroundBounds.widthPct / 100 * width),
       h: Math.round(backgroundBounds.heightPct / 100 * height),
     }
-    const svgMask = [
-      `<svg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}'>`,
-      `<rect width='${width}' height='${height}' fill='white'/>`,
-      `<rect x='${bgPx.x}' y='${bgPx.y}' width='${bgPx.w}' height='${bgPx.h}' fill='black'/>`,
-      `</svg>`,
-    ].join('')
-    const maskUrl = `url("data:image/svg+xml,${encodeURIComponent(svgMask)}")`
-    frameStyle += `mask-image:${maskUrl};mask-size:100% 100%;`
 
-  } else if (newBackground) {
-    // No bounds info: use as full-frame background, frame rendered on top
-    backgroundLayer = `<img style="
-      position:absolute; z-index:1; inset:0;
-      width:100%; height:100%; object-fit:cover; display:block;
-    " src="${newBackground}" />`
+    // Black rects in SVG mask: background area + all price areas
+    const blackRects = [
+      `<rect x='${bgPx.x}' y='${bgPx.y}' width='${bgPx.w}' height='${bgPx.h}' fill='black'/>`,
+      ...priceRectsPx.map((r) =>
+        `<rect x='${r.x}' y='${r.y}' width='${r.w}' height='${r.h}' fill='black'/>`
+      ),
+    ].join('')
+
+    const svgMask = `<svg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}'>`
+      + `<rect width='${width}' height='${height}' fill='white'/>`
+      + blackRects
+      + `</svg>`
+    const maskUrl = `url("data:image/svg+xml,${encodeURIComponent(svgMask)}")`
+
+    return `<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{width:${width}px;height:${height}px;overflow:hidden}
+  .frame{position:relative;width:${width}px;height:${height}px;overflow:hidden}
+</style></head><body>
+<div class="frame">
+  <img style="position:absolute;z-index:1;
+    top:${backgroundBounds.top.toFixed(3)}%;left:${backgroundBounds.left.toFixed(3)}%;
+    width:${backgroundBounds.widthPct.toFixed(3)}%;height:${backgroundBounds.heightPct.toFixed(3)}%;
+    object-fit:cover;display:block;" src="${effectiveBg}"/>
+  <img style="position:absolute;inset:0;width:100%;height:100%;z-index:2;display:block;
+    mask-image:${maskUrl};mask-size:100% 100%;" src="${frameBase64}"/>
+  ${overlays}
+</div>
+</body></html>`
   }
 
+  // ── Strategy B: canvas color-sampling (no background image available) ───────
+  // Samples the pixel row just above each price area and fills with that color,
+  // effectively painting over the old price with the local background color.
+  const sampleScript = priceRectsPx.map((r) => {
+    const sampleY = Math.max(0, r.y - Math.ceil(r.h * 0.6))
+    return `(function(){`
+      + `var d=ctx.getImageData(${r.x},${sampleY},${r.w},1).data;`
+      + `var rs=0,gs=0,bs=0,n=d.length/4||1;`
+      + `for(var i=0;i<d.length;i+=4){rs+=d[i];gs+=d[i+1];bs+=d[i+2]}`
+      + `ctx.fillStyle='rgb('+(rs/n|0)+','+(gs/n|0)+','+(bs/n|0)+')';`
+      + `ctx.fillRect(${r.x},${r.y},${r.w},${r.h});`
+      + `})()`
+  }).join(';')
+
   return `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
+<html><head><meta charset="utf-8">
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { width: ${width}px; height: ${height}px; overflow: hidden; }
-  .frame { position: relative; width: ${width}px; height: ${height}px; overflow: hidden; }
-</style>
-</head>
-<body>
-  <div class="frame">
-    ${backgroundLayer}
-    <img style="${frameStyle}" src="${frameBase64}" />
-    ${overlays}
-  </div>
-</body>
-</html>`
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{width:${width}px;height:${height}px;overflow:hidden}
+  .frame{position:relative;width:${width}px;height:${height}px;overflow:hidden}
+  canvas{position:absolute;inset:0;z-index:1}
+</style></head><body>
+<div class="frame">
+  <canvas id="c" width="${width}" height="${height}"></canvas>
+  ${overlays}
+</div>
+<script>
+var img=new Image();
+img.onload=function(){
+  var canvas=document.getElementById('c');
+  var ctx=canvas.getContext('2d');
+  ctx.drawImage(img,0,0,${width},${height});
+  ${sampleScript};
+  window.__ready=true;
+};
+img.src='${frameBase64}';
+</script>
+</body></html>`
 }
 
 function escHtml(s: string): string {
