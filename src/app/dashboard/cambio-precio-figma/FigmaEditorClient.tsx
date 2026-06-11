@@ -26,9 +26,10 @@ interface EnrichedFrame extends DetectedFrame {
 
 interface FrameItem {
   frame: EnrichedFrame
-  thumbnail: string | null      // low-res preview (scale 0.3) loaded on file open
-  imageBase64: string | null    // high-res (scale 2) loaded on "Procesar"
-  newBackground: string | null  // user-uploaded replacement for background layer
+  thumbnail: string | null          // low-res preview (scale 0.3) loaded on file open
+  imageBase64: string | null        // high-res (scale 2) loaded on "Procesar"
+  backgroundImageBase64: string | null  // export of background node separately
+  newBackground: string | null      // user-uploaded replacement for background layer
   priceElements: PriceElement[]
   status: 'idle' | 'exporting' | 'detecting' | 'ready' | 'rendering' | 'done' | 'error'
   error?: string
@@ -93,6 +94,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
         frame: f,
         thumbnail: null,
         imageBase64: null,
+        backgroundImageBase64: null,
         newBackground: null,
         priceElements: [],
         status: 'idle',
@@ -186,6 +188,26 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
       return
     }
 
+    // 1b. Export background nodes separately (non-fatal) so we can show + replace them
+    const bgNodeIds = selected
+      .filter((f) => f.frame.backgroundNode)
+      .map((f) => f.frame.backgroundNode!.id)
+
+    let bgImageMap: Record<string, string> = {}
+    if (bgNodeIds.length > 0) {
+      try {
+        const bgRes = await fetch('/api/figma', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileKey, frameIds: bgNodeIds, scale: 2 }),
+        })
+        if (bgRes.ok) {
+          const bgData = await bgRes.json()
+          bgImageMap = bgData.images || {}
+        }
+      } catch { /* background export is optional */ }
+    }
+
     // 2. Run price detection on each frame
     await Promise.all(
       selected.map(async (item) => {
@@ -198,8 +220,14 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
           return
         }
 
+        const bgImg = item.frame.backgroundNode
+          ? (bgImageMap[item.frame.backgroundNode.id] || null)
+          : null
+
         setFrames((prev) =>
-          prev.map((f) => f.frame.id === item.frame.id ? { ...f, imageBase64: img, status: 'detecting' } : f)
+          prev.map((f) => f.frame.id === item.frame.id
+            ? { ...f, imageBase64: img, backgroundImageBase64: bgImg, status: 'detecting' }
+            : f)
         )
 
         try {
@@ -256,10 +284,29 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     setFrames((prev) => prev.map((f) => f.frame.id === frameId ? { ...f, status: 'rendering' } : f))
 
     try {
-      const { width, height } = item.frame.bounds
-      // Use user-uploaded background if available, otherwise use the full frame export
-      const bgImage = item.newBackground || item.imageBase64
-      const html = buildPriceHtml(bgImage, item.priceElements, item.newPrice, width, height, !!item.newBackground)
+      const { width, height, x: frameX, y: frameY } = item.frame.bounds
+
+      // Compute background node bounds as % of frame (for SVG mask + positioning)
+      let backgroundBounds: { top: number; left: number; widthPct: number; heightPct: number } | null = null
+      if (item.frame.backgroundNode) {
+        const bg = item.frame.backgroundNode.bounds
+        backgroundBounds = {
+          top:      (bg.y - frameY) / height * 100,
+          left:     (bg.x - frameX) / width  * 100,
+          widthPct:  bg.width  / width  * 100,
+          heightPct: bg.height / height * 100,
+        }
+      }
+
+      const html = buildPriceHtml(
+        item.imageBase64,
+        item.priceElements,
+        item.newPrice,
+        width,
+        height,
+        item.newBackground,
+        backgroundBounds,
+      )
 
       const exportRes = await fetch('/api/price-pieces/export', {
         method: 'POST',
@@ -586,6 +633,7 @@ function FrameDetail({
   onRender: () => void
   onBackgroundChange: (b: string | null) => void
 }) {
+  const hasBgNode = !!item.frame.backgroundNode
   const isProcessing = item.status === 'exporting' || item.status === 'detecting' || item.status === 'rendering'
 
   function handleBgUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -679,21 +727,46 @@ function FrameDetail({
 
         {/* Controls */}
         <div className="flex-1 space-y-4">
-          {/* Background replacement */}
-          {(item.frame.backgroundNode || item.imageBase64) && (
+          {/* Background replacement — only shown when a background IMAGE node was detected */}
+          {(hasBgNode || item.backgroundImageBase64) && (
             <div>
               <p className="text-xs font-semibold text-gray-700 mb-1.5 flex items-center gap-1.5">
                 Imagen de fondo
                 {item.frame.backgroundNode && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-medium">
-                    layer: {item.frame.backgroundNode.name}
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-medium font-mono">
+                    {item.frame.backgroundNode.name}
                   </span>
                 )}
               </p>
+
+              {/* Current background preview */}
+              {item.backgroundImageBase64 && (
+                <div className="mb-2 flex items-start gap-2">
+                  <div className="flex-shrink-0">
+                    <p className="text-[10px] text-gray-400 mb-1">Actual</p>
+                    <img
+                      src={item.backgroundImageBase64}
+                      alt="background actual"
+                      className="w-24 h-16 object-cover rounded border border-gray-200"
+                    />
+                  </div>
+                  {item.newBackground && (
+                    <div className="flex-shrink-0">
+                      <p className="text-[10px] text-gray-400 mb-1">Reemplazo</p>
+                      <img
+                        src={item.newBackground}
+                        alt="nuevo background"
+                        className="w-24 h-16 object-cover rounded border border-teal-300"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="flex items-center gap-2">
                 <label className="flex-1 cursor-pointer">
                   <div className={`border border-dashed rounded-lg px-3 py-2 text-xs text-center transition-colors ${item.newBackground ? 'border-teal-400 bg-teal-50 text-teal-700' : 'border-gray-300 text-gray-500 hover:border-gray-400'}`}>
-                    {item.newBackground ? '✓ Nueva imagen cargada' : 'Subir imagen de reemplazo…'}
+                    {item.newBackground ? '✓ Nueva imagen cargada — click para cambiar' : 'Subir imagen de reemplazo…'}
                   </div>
                   <input type="file" accept="image/*" onChange={handleBgUpload} className="sr-only" />
                 </label>
@@ -701,15 +774,15 @@ function FrameDetail({
                   <button
                     onClick={() => onBackgroundChange(null)}
                     className="text-xs px-2 py-1.5 rounded border border-gray-200 text-gray-500 hover:bg-gray-50"
-                    title="Quitar imagen"
                   >
                     Quitar
                   </button>
                 )}
               </div>
-              {item.newBackground && (
+              {item.newBackground && item.frame.backgroundNode && (
                 <p className="text-[11px] text-gray-400 mt-1">
-                  El resultado final usará esta imagen como fondo, con el precio superpuesto en la misma posición.
+                  La nueva imagen reemplaza solo el layer <span className="font-mono">{item.frame.backgroundNode.name}</span>.
+                  El resto del frame (logos, decoraciones) se preserva.
                 </p>
               )}
             </div>
@@ -796,19 +869,22 @@ function FrameDetail({
 }
 
 // ─── HTML builder for Playwright rendering ────────────────────────────────────
-// Uses top/left as percentages (already frame-relative from detect-price route).
-// Font size in px directly (no vh) so it's independent of viewport quirks.
+// When newBackground is provided and backgroundBounds are known, uses an SVG
+// mask to cut the background area from the frame export, allowing the new
+// background image to show through — preserving all other frame layers.
+// When no backgroundBounds: new background replaces the entire frame background.
 
 function buildPriceHtml(
-  backgroundBase64: string,
+  frameBase64: string,
   priceElements: PriceElement[],
   newPrice: string,
   width: number,
   height: number,
-  _isReplacedBackground = false,
+  newBackground: string | null = null,
+  backgroundBounds: { top: number; left: number; widthPct: number; heightPct: number } | null = null,
 ): string {
   const overlays = priceElements.map((el) => `<div style="
-    position: absolute;
+    position: absolute; z-index: 3;
     top: ${el.top.toFixed(3)}%;
     left: ${el.left.toFixed(3)}%;
     width: ${el.widthPct.toFixed(3)}%;
@@ -823,6 +899,45 @@ function buildPriceHtml(
     -webkit-font-smoothing: antialiased;
   ">${escHtml(newPrice)}</div>`).join('\n')
 
+  let backgroundLayer = ''
+  let frameStyle = 'position:absolute;inset:0;width:100%;height:100%;z-index:2;display:block;'
+
+  if (newBackground && backgroundBounds) {
+    // Replacement background at exact background node position
+    backgroundLayer = `<img style="
+      position:absolute; z-index:1;
+      top:${backgroundBounds.top.toFixed(3)}%;
+      left:${backgroundBounds.left.toFixed(3)}%;
+      width:${backgroundBounds.widthPct.toFixed(3)}%;
+      height:${backgroundBounds.heightPct.toFixed(3)}%;
+      object-fit:cover; display:block;
+    " src="${newBackground}" />`
+
+    // SVG mask: white = show, black = hide.
+    // Cuts the background node area from the frame export so new bg shows through.
+    const bgPx = {
+      x: Math.round(backgroundBounds.left   / 100 * width),
+      y: Math.round(backgroundBounds.top    / 100 * height),
+      w: Math.round(backgroundBounds.widthPct  / 100 * width),
+      h: Math.round(backgroundBounds.heightPct / 100 * height),
+    }
+    const svgMask = [
+      `<svg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}'>`,
+      `<rect width='${width}' height='${height}' fill='white'/>`,
+      `<rect x='${bgPx.x}' y='${bgPx.y}' width='${bgPx.w}' height='${bgPx.h}' fill='black'/>`,
+      `</svg>`,
+    ].join('')
+    const maskUrl = `url("data:image/svg+xml,${encodeURIComponent(svgMask)}")`
+    frameStyle += `mask-image:${maskUrl};mask-size:100% 100%;`
+
+  } else if (newBackground) {
+    // No bounds info: use as full-frame background, frame rendered on top
+    backgroundLayer = `<img style="
+      position:absolute; z-index:1; inset:0;
+      width:100%; height:100%; object-fit:cover; display:block;
+    " src="${newBackground}" />`
+  }
+
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -831,12 +946,12 @@ function buildPriceHtml(
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { width: ${width}px; height: ${height}px; overflow: hidden; }
   .frame { position: relative; width: ${width}px; height: ${height}px; overflow: hidden; }
-  .bg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 </style>
 </head>
 <body>
   <div class="frame">
-    <img class="bg" src="${backgroundBase64}" />
+    ${backgroundLayer}
+    <img style="${frameStyle}" src="${frameBase64}" />
     ${overlays}
   </div>
 </body>
