@@ -1293,17 +1293,22 @@ function FrameDetail({
 }
 
 // ─── HTML builder for Playwright rendering ────────────────────────────────────
-// Strategy:
-// 1. Background layer (z-index 1): background image (newBackground or backgroundImageBase64)
-//    positioned at backgroundNode bounds — fills the holes punched by the SVG mask.
-// 2. Frame export (z-index 2): SVG mask cuts TWO kinds of areas:
-//    a) The background node area (so background image shows through)
-//    b) All price element areas (so old price text is hidden, background shows through)
-// 3. New price overlays (z-index 3): drawn over the cleared price areas.
 //
-// Without background image: falls back to canvas-based color sampling to cover old prices.
+// The frame PNG is ALWAYS kept intact — it contains the complete original design
+// (background photo, logos, overlays, all design elements). We only paint over
+// the price area and overlay new text on top.
+//
+// Rendering stack:
+//   z-index 0  │  frame PNG (complete, never masked)
+//   z-index 1  │  [opt] new background image — only visible at bgNode bounds
+//              │  price-erase rect(s) — exact containerColor fills
+//   z-index 2  │  new price text overlays (exact Figma typography)
+//
+// Price-erase strategy (in order of preference):
+//   A. Exact color  — containerColor from Figma tree walk (solid fill behind text)
+//   B. Canvas scan  — sample median color around price area (fallback)
 
-const PRICE_MASK_PAD = 6 // px padding around each price element in the mask
+const PRICE_MASK_PAD = 8 // px padding around each price element in the erase rect
 
 // ─── Typography helpers ───────────────────────────────────────────────────────
 
@@ -1383,12 +1388,10 @@ function buildPriceHtml(
   backgroundBounds: { top: number; left: number; widthPct: number; heightPct: number } | null = null,
   backgroundImageBase64: string | null = null,
 ): string {
-  const effectiveBg = newBackground || backgroundImageBase64
-
-  // Price element bounding boxes in px (with padding so mask fully covers the text)
+  // Price element bounding boxes in px (+padding to fully cover text edges)
   const priceRectsPx = priceElements.map((el) => ({
-    x: Math.max(0, Math.round(el.left / 100 * width) - PRICE_MASK_PAD),
-    y: Math.max(0, Math.round(el.top  / 100 * height) - PRICE_MASK_PAD),
+    x: Math.max(0, Math.round(el.left   / 100 * width)  - PRICE_MASK_PAD),
+    y: Math.max(0, Math.round(el.top    / 100 * height) - PRICE_MASK_PAD),
     w: Math.min(width,  Math.round(el.widthPct  / 100 * width)  + PRICE_MASK_PAD * 2),
     h: Math.min(height, Math.round(el.heightPct / 100 * height) + PRICE_MASK_PAD * 2),
   }))
@@ -1396,7 +1399,7 @@ function buildPriceHtml(
   // Price text overlays — one per detected element, full typography fidelity
   const overlays = priceElements.map((el) => priceOverlayDiv(el, newPrice)).join('\n')
 
-  // Font loading — try Google Fonts for each unique family used
+  // Font loading — try Google Fonts for each unique family
   const families = [...new Set(priceElements.map((el) => el.fontFamily))]
   const fontLinks = families
     .map(googleFontsUrl)
@@ -1404,19 +1407,23 @@ function buildPriceHtml(
     .map((url) => `<link rel="stylesheet" href="${url}">`)
     .join('\n')
 
-  // Font-ready signal for Playwright (set after document.fonts.ready resolves)
-  const fontReadyScript = `<script>document.fonts.ready.then(function(){window.__fontsReady=true;});</script>`
-
   const baseHead = `<meta charset="utf-8">
 ${fontLinks}
-${fontReadyScript}
+<script>document.fonts.ready.then(function(){window.__fontsReady=true;});</script>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
   body{width:${width}px;height:${height}px;overflow:hidden}
   .frame{position:relative;width:${width}px;height:${height}px;overflow:hidden}
 </style>`
 
-  // ── Strategy A: SVG mask (requires background image) ───────────────────────
+  // ── Optional background swap ────────────────────────────────────────────────
+  // When user uploads a new background image, replace ONLY that region.
+  // The frame PNG is masked ONLY at the backgroundNode bounds — all other design
+  // elements (logos, overlays, typography, shapes) remain fully visible.
+  const effectiveBg = newBackground || backgroundImageBase64
+  let bgLayer = ''
+  let frameMaskStyle = ''
+
   if (effectiveBg && backgroundBounds) {
     const bgPx = {
       x: Math.round(backgroundBounds.left     / 100 * width),
@@ -1424,68 +1431,52 @@ ${fontReadyScript}
       w: Math.round(backgroundBounds.widthPct / 100 * width),
       h: Math.round(backgroundBounds.heightPct / 100 * height),
     }
-
-    // Black rects in SVG mask: background area + all price areas
-    const blackRects = [
-      `<rect x='${bgPx.x}' y='${bgPx.y}' width='${bgPx.w}' height='${bgPx.h}' fill='black'/>`,
-      ...priceRectsPx.map((r) =>
-        `<rect x='${r.x}' y='${r.y}' width='${r.w}' height='${r.h}' fill='black'/>`
-      ),
-    ].join('')
-
-    const svgMask = `<svg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}'>`
+    const svgMask = encodeURIComponent(
+      `<svg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}'>`
       + `<rect width='${width}' height='${height}' fill='white'/>`
-      + blackRects
+      + `<rect x='${bgPx.x}' y='${bgPx.y}' width='${bgPx.w}' height='${bgPx.h}' fill='black'/>`
       + `</svg>`
-    const maskUrl = `url("data:image/svg+xml,${encodeURIComponent(svgMask)}")`
-
-    return `<!DOCTYPE html>
-<html><head>${baseHead}</head><body>
-<div class="frame">
-  <img style="position:absolute;z-index:1;
-    top:${backgroundBounds.top.toFixed(3)}%;left:${backgroundBounds.left.toFixed(3)}%;
-    width:${backgroundBounds.widthPct.toFixed(3)}%;height:${backgroundBounds.heightPct.toFixed(3)}%;
-    object-fit:cover;display:block;" src="${effectiveBg}"/>
-  <img style="position:absolute;inset:0;width:100%;height:100%;z-index:2;display:block;
-    mask-image:${maskUrl};mask-size:100% 100%;" src="${frameBase64}"/>
-  ${overlays}
-</div>
-</body></html>`
+    )
+    bgLayer = `<img style="position:absolute;z-index:0;`
+      + `top:${backgroundBounds.top.toFixed(3)}%;left:${backgroundBounds.left.toFixed(3)}%;`
+      + `width:${backgroundBounds.widthPct.toFixed(3)}%;height:${backgroundBounds.heightPct.toFixed(3)}%;`
+      + `object-fit:cover;display:block;" src="${effectiveBg}"/>`
+    frameMaskStyle = `mask-image:url("data:image/svg+xml,${svgMask}");mask-size:100% 100%;`
   }
 
-  // ── Strategy B: erase old price using exact Figma container fills ───────────
-  // Each price element carries containerColor (the solid fill of the rectangle
-  // directly behind it in the Figma layer stack). We use that exact color to
-  // paint over the old price — no sampling needed.
-  // Fallback: if containerColor is missing, sample 1 row above (legacy).
-
+  // ── Strategy A: exact Figma containerColor (pure CSS, no canvas) ───────────
+  // containerColor = the solid fill of the rectangle directly behind each price
+  // TEXT node in Figma's layer stack (extracted during tree walk in client.ts).
   const hasExactColors = priceElements.every((el) => !!el.containerColor)
 
   if (hasExactColors) {
-    // Pure CSS — no canvas needed, no __ready signal required.
     const eraseRects = priceElements.map((el, i) => {
       const r = priceRectsPx[i]
-      return `<div style="position:absolute;z-index:1;
-        left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;
-        background:${el.containerColor};"></div>`
+      return `<div style="position:absolute;z-index:2;pointer-events:none;`
+        + `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;`
+        + `background:${el.containerColor};"></div>`
     }).join('\n')
 
     return `<!DOCTYPE html>
 <html><head>${baseHead}</head><body>
 <div class="frame">
-  <img style="position:absolute;inset:0;width:100%;height:100%;z-index:0;display:block;" src="${frameBase64}"/>
+  ${bgLayer}
+  <img style="position:absolute;inset:0;width:100%;height:100%;z-index:1;display:block;${frameMaskStyle}" src="${frameBase64}"/>
   ${eraseRects}
   ${overlays}
 </div>
 </body></html>`
   }
 
-  // ── Strategy B fallback: canvas color-sampling ────────────────────────────
+  // ── Strategy B: canvas median-color sampling ────────────────────────────────
+  // Used when no containerColor is available (e.g. price on image/gradient bg).
+  // Samples a strip of pixels just above each price area and uses that color.
   const sampleScript = priceRectsPx.map((r) => {
-    const sampleY = Math.max(0, r.y - Math.ceil(r.h * 0.6))
+    const sampleY = Math.max(0, r.y - 4)
+    const sampleH = Math.max(1, Math.min(4, r.y))
     return `(function(){`
-      + `var d=ctx.getImageData(${r.x},${sampleY},${r.w},1).data;`
-      + `var rs=0,gs=0,bs=0,n=d.length/4||1;`
+      + `var d=ctx.getImageData(${r.x},${sampleY},${r.w},${sampleH}).data;`
+      + `var rs=0,gs=0,bs=0,n=Math.max(d.length/4,1);`
       + `for(var i=0;i<d.length;i+=4){rs+=d[i];gs+=d[i+1];bs+=d[i+2]}`
       + `ctx.fillStyle='rgb('+(rs/n|0)+','+(gs/n|0)+','+(bs/n|0)+')';`
       + `ctx.fillRect(${r.x},${r.y},${r.w},${r.h});`
@@ -1494,17 +1485,18 @@ ${fontReadyScript}
 
   return `<!DOCTYPE html>
 <html><head>${baseHead}
-<style>canvas{position:absolute;inset:0;z-index:1}</style>
+<style>.cv{position:absolute;inset:0;z-index:1;width:100%;height:100%;display:block;}</style>
 </head><body>
 <div class="frame">
-  <canvas id="c" width="${width}" height="${height}"></canvas>
+  ${bgLayer}
+  <canvas id="c" class="cv" width="${width}" height="${height}"></canvas>
   ${overlays}
 </div>
 <script>
 var img=new Image();
 img.onload=function(){
-  var canvas=document.getElementById('c');
-  var ctx=canvas.getContext('2d');
+  var cv=document.getElementById('c');
+  var ctx=cv.getContext('2d');
   ctx.drawImage(img,0,0,${width},${height});
   ${sampleScript};
   document.fonts.ready.then(function(){window.__ready=true;});
