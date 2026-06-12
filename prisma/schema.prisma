@@ -163,6 +163,28 @@ model Settings {
   @@map("settings")
 }
 
+model FigmaProject {
+  id        String          @id @default(cuid())
+  name      String
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  campaigns FigmaCampaign[]
+
+  @@map("figma_projects")
+}
+
+model FigmaCampaign {
+  id        String       @id @default(cuid())
+  name      String
+  figmaUrl  String       @default("")
+  projectId String
+  project   FigmaProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@map("figma_campaigns")
+}
+
 // Stage values: EXPECTATIVA | LANZAMIENTO | SOSTENIMIENTO
 
 model User {

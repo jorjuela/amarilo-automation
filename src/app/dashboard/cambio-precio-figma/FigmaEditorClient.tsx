@@ -1,9 +1,25 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import type { DetectedFrame } from '@/lib/figma/client'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+interface FigmaCampaign {
+  id: string
+  name: string
+  figmaUrl: string
+  projectId: string
+  createdAt: string
+}
+
+interface FigmaProject {
+  id: string
+  name: string
+  campaigns: FigmaCampaign[]
+  createdAt: string
+}
+
 
 interface PriceElement {
   id: string
@@ -54,8 +70,28 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
   const [activeFrameId, setActiveFrameId] = useState<string | null>(null)
   const [processing, setProcessing] = useState(false)
 
+  // ── Project / Campaign state ──────────────────────────────────────────────
+  const [projects, setProjects] = useState<FigmaProject[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null)
+  const [urlSavedToCampaign, setUrlSavedToCampaign] = useState(false)
+
+  const selectedProject = projects.find((p) => p.id === selectedProjectId) || null
+  const selectedCampaign = selectedProject?.campaigns.find((c) => c.id === selectedCampaignId) || null
+
+  const loadProjects = useCallback(async () => {
+    try {
+      const res = await fetch('/api/figma/projects')
+      if (res.ok) {
+        const data = await res.json()
+        setProjects(data.projects)
+      }
+    } catch { /* non-fatal */ }
+  }, [])
+
   // Restore last used URL from localStorage or ?url= query param on mount
   useEffect(() => {
+    loadProjects()
     const params = new URLSearchParams(window.location.search)
     const queryUrl = params.get('url') || params.get('fileUrl')
     if (queryUrl) {
@@ -64,7 +100,39 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     }
     const saved = localStorage.getItem(LS_KEY)
     if (saved) setFileUrl(saved)
-  }, [])
+  }, [loadProjects])
+
+  // When campaign selected: auto-fill URL
+  function handleCampaignSelect(campaignId: string) {
+    setSelectedCampaignId(campaignId)
+    setUrlSavedToCampaign(false)
+    const proj = projects.find((p) => p.campaigns.some((c) => c.id === campaignId))
+    const camp = proj?.campaigns.find((c) => c.id === campaignId)
+    if (camp?.figmaUrl) {
+      setFileUrl(camp.figmaUrl)
+      localStorage.setItem(LS_KEY, camp.figmaUrl)
+    }
+  }
+
+  // Auto-save URL to campaign after successful file load
+  async function saveUrlToCampaign(campaignId: string, url: string) {
+    try {
+      await fetch(`/api/figma/campaigns/${campaignId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ figmaUrl: url }),
+      })
+      // Update local state
+      setProjects((prev) => prev.map((p) => ({
+        ...p,
+        campaigns: p.campaigns.map((c) =>
+          c.id === campaignId ? { ...c, figmaUrl: url } : c
+        ),
+      })))
+      setUrlSavedToCampaign(true)
+      setTimeout(() => setUrlSavedToCampaign(false), 3000)
+    } catch { /* non-fatal */ }
+  }
 
   const activeFrame = frames.find((f) => f.frame.id === activeFrameId) || null
 
@@ -89,6 +157,11 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
       setFileKey(data.fileKey)
       setFileName(data.fileName)
       setMcpAvailable(!!data.mcpAvailable)
+
+      // Auto-save URL to selected campaign if it changed
+      if (selectedCampaignId && selectedCampaign?.figmaUrl !== fileUrl.trim()) {
+        saveUrlToCampaign(selectedCampaignId, fileUrl.trim())
+      }
 
       const items: FrameItem[] = (data.frames as EnrichedFrame[]).map((f) => ({
         frame: f,
@@ -439,6 +512,33 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
 
   return (
     <div className="space-y-4">
+      {/* Project / Campaign selector */}
+      <ProjectCampaignBar
+        projects={projects}
+        selectedProjectId={selectedProjectId}
+        selectedCampaignId={selectedCampaignId}
+        onProjectSelect={(id) => { setSelectedProjectId(id); setSelectedCampaignId(null) }}
+        onCampaignSelect={handleCampaignSelect}
+        onProjectCreated={(p) => { setProjects((prev) => [p, ...prev]); setSelectedProjectId(p.id) }}
+        onCampaignCreated={(c) => {
+          setProjects((prev) => prev.map((p) =>
+            p.id === c.projectId ? { ...p, campaigns: [c, ...p.campaigns] } : p
+          ))
+          handleCampaignSelect(c.id)
+        }}
+        onProjectDeleted={(id) => {
+          setProjects((prev) => prev.filter((p) => p.id !== id))
+          if (selectedProjectId === id) { setSelectedProjectId(null); setSelectedCampaignId(null) }
+        }}
+        onCampaignDeleted={(id) => {
+          setProjects((prev) => prev.map((p) => ({
+            ...p, campaigns: p.campaigns.filter((c) => c.id !== id),
+          })))
+          if (selectedCampaignId === id) setSelectedCampaignId(null)
+        }}
+        urlSavedToCampaign={urlSavedToCampaign}
+      />
+
       {/* File URL input */}
       <div className="card p-4">
         <div className="flex items-center justify-between mb-2">
@@ -608,6 +708,215 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
             )}
           </div>
         </div>
+      )}
+    </div>
+  )
+}
+
+// ─── ProjectCampaignBar ───────────────────────────────────────────────────────
+
+function ProjectCampaignBar({
+  projects, selectedProjectId, selectedCampaignId,
+  onProjectSelect, onCampaignSelect,
+  onProjectCreated, onCampaignCreated,
+  onProjectDeleted, onCampaignDeleted,
+  urlSavedToCampaign,
+}: {
+  projects: FigmaProject[]
+  selectedProjectId: string | null
+  selectedCampaignId: string | null
+  onProjectSelect: (id: string) => void
+  onCampaignSelect: (id: string) => void
+  onProjectCreated: (p: FigmaProject) => void
+  onCampaignCreated: (c: FigmaCampaign) => void
+  onProjectDeleted: (id: string) => void
+  onCampaignDeleted: (id: string) => void
+  urlSavedToCampaign: boolean
+}) {
+  const [newProjectName, setNewProjectName] = useState('')
+  const [newCampaignName, setNewCampaignName] = useState('')
+  const [creatingProject, setCreatingProject] = useState(false)
+  const [creatingCampaign, setCreatingCampaign] = useState(false)
+  const [showNewProject, setShowNewProject] = useState(false)
+  const [showNewCampaign, setShowNewCampaign] = useState(false)
+
+  const selectedProject = projects.find((p) => p.id === selectedProjectId) || null
+  const campaigns = selectedProject?.campaigns || []
+
+  async function handleCreateProject() {
+    if (!newProjectName.trim()) return
+    setCreatingProject(true)
+    try {
+      const res = await fetch('/api/figma/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newProjectName }),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        onProjectCreated({ ...data.project, campaigns: [] })
+        setNewProjectName('')
+        setShowNewProject(false)
+      }
+    } finally { setCreatingProject(false) }
+  }
+
+  async function handleCreateCampaign() {
+    if (!newCampaignName.trim() || !selectedProjectId) return
+    setCreatingCampaign(true)
+    try {
+      const res = await fetch('/api/figma/campaigns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newCampaignName, projectId: selectedProjectId }),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        onCampaignCreated(data.campaign)
+        setNewCampaignName('')
+        setShowNewCampaign(false)
+      }
+    } finally { setCreatingCampaign(false) }
+  }
+
+  async function handleDeleteProject(id: string) {
+    if (!confirm('¿Eliminar proyecto y todas sus campañas?')) return
+    await fetch(`/api/figma/projects/${id}`, { method: 'DELETE' })
+    onProjectDeleted(id)
+  }
+
+  async function handleDeleteCampaign(id: string) {
+    if (!confirm('¿Eliminar esta campaña?')) return
+    await fetch(`/api/figma/campaigns/${id}`, { method: 'DELETE' })
+    onCampaignDeleted(id)
+  }
+
+  return (
+    <div className="card p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-xs font-semibold text-gray-600">Organización</span>
+        {urlSavedToCampaign && (
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-medium ml-auto">
+            ✓ URL guardada en campaña
+          </span>
+        )}
+      </div>
+
+      <div className="flex items-center gap-3 flex-wrap">
+        {/* Project selector */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] text-gray-500 font-medium whitespace-nowrap">Proyecto:</span>
+          <select
+            value={selectedProjectId || ''}
+            onChange={(e) => e.target.value && onProjectSelect(e.target.value)}
+            className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-blue-400 bg-white max-w-[180px]"
+          >
+            <option value="">— Seleccionar —</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+          {selectedProjectId && (
+            <button
+              onClick={() => handleDeleteProject(selectedProjectId)}
+              className="text-gray-300 hover:text-red-400 text-sm leading-none"
+              title="Eliminar proyecto"
+            >×</button>
+          )}
+          {!showNewProject ? (
+            <button
+              onClick={() => setShowNewProject(true)}
+              className="text-[11px] px-2 py-1 rounded border border-dashed border-gray-300 text-gray-500 hover:border-gray-400 whitespace-nowrap"
+            >+ Proyecto</button>
+          ) : (
+            <div className="flex gap-1">
+              <input
+                autoFocus
+                type="text"
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleCreateProject(); if (e.key === 'Escape') setShowNewProject(false) }}
+                placeholder="Nombre del proyecto"
+                className="text-xs border border-blue-300 rounded px-2 py-1 w-36 focus:outline-none"
+              />
+              <button
+                onClick={handleCreateProject}
+                disabled={creatingProject || !newProjectName.trim()}
+                className="text-xs px-2 py-1 bg-blue-600 text-white rounded disabled:opacity-50"
+              >
+                {creatingProject ? '...' : 'Crear'}
+              </button>
+              <button onClick={() => setShowNewProject(false)} className="text-xs px-1.5 py-1 text-gray-500">✕</button>
+            </div>
+          )}
+        </div>
+
+        {/* Divider */}
+        {selectedProjectId && <span className="text-gray-300 text-sm">/</span>}
+
+        {/* Campaign selector */}
+        {selectedProjectId && (
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-gray-500 font-medium whitespace-nowrap">Campaña:</span>
+            <select
+              value={selectedCampaignId || ''}
+              onChange={(e) => e.target.value && onCampaignSelect(e.target.value)}
+              className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-blue-400 bg-white max-w-[180px]"
+            >
+              <option value="">— Seleccionar —</option>
+              {campaigns.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+            {selectedCampaignId && (
+              <button
+                onClick={() => handleDeleteCampaign(selectedCampaignId)}
+                className="text-gray-300 hover:text-red-400 text-sm leading-none"
+                title="Eliminar campaña"
+              >×</button>
+            )}
+            {!showNewCampaign ? (
+              <button
+                onClick={() => setShowNewCampaign(true)}
+                className="text-[11px] px-2 py-1 rounded border border-dashed border-gray-300 text-gray-500 hover:border-gray-400 whitespace-nowrap"
+              >+ Campaña</button>
+            ) : (
+              <div className="flex gap-1">
+                <input
+                  autoFocus
+                  type="text"
+                  value={newCampaignName}
+                  onChange={(e) => setNewCampaignName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleCreateCampaign(); if (e.key === 'Escape') setShowNewCampaign(false) }}
+                  placeholder="Nombre de campaña"
+                  className="text-xs border border-blue-300 rounded px-2 py-1 w-36 focus:outline-none"
+                />
+                <button
+                  onClick={handleCreateCampaign}
+                  disabled={creatingCampaign || !newCampaignName.trim()}
+                  className="text-xs px-2 py-1 bg-blue-600 text-white rounded disabled:opacity-50"
+                >
+                  {creatingCampaign ? '...' : 'Crear'}
+                </button>
+                <button onClick={() => setShowNewCampaign(false)} className="text-xs px-1.5 py-1 text-gray-500">✕</button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Breadcrumb info when campaign selected */}
+      {selectedProjectId && selectedCampaignId && (
+        <p className="text-[11px] text-gray-400 mt-2">
+          {selectedProject?.name} › {campaigns.find((c) => c.id === selectedCampaignId)?.name}
+          {' · '}La URL de Figma se guarda automáticamente en esta campaña al cargar el archivo.
+        </p>
+      )}
+
+      {projects.length === 0 && (
+        <p className="text-[11px] text-gray-400 mt-1">
+          Crea un proyecto y una campaña para organizar tus archivos de Figma.
+        </p>
       )}
     </div>
   )
