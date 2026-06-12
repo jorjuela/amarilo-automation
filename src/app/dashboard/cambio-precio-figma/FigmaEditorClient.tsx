@@ -640,7 +640,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
 
           {/* Right panel: detail */}
           <div className="flex-1 space-y-3">
-            {readyCount > 0 && (
+            {(readyCount > 0 || doneCount > 0 || renderingCount > 0) && (
               <div className="card p-4 space-y-3">
                 {/* Batch price input */}
                 <div>
