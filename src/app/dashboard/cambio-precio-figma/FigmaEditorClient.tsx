@@ -16,8 +16,10 @@ interface FigmaCampaign {
 interface FigmaProject {
   id: string
   name: string
+  macroProject?: string | null
+  city?: string | null
+  stage?: string | null
   campaigns: FigmaCampaign[]
-  createdAt: string
 }
 
 
@@ -519,16 +521,11 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
         selectedCampaignId={selectedCampaignId}
         onProjectSelect={(id) => { setSelectedProjectId(id); setSelectedCampaignId(null) }}
         onCampaignSelect={handleCampaignSelect}
-        onProjectCreated={(p) => { setProjects((prev) => [p, ...prev]); setSelectedProjectId(p.id) }}
         onCampaignCreated={(c) => {
           setProjects((prev) => prev.map((p) =>
             p.id === c.projectId ? { ...p, campaigns: [c, ...p.campaigns] } : p
           ))
           handleCampaignSelect(c.id)
-        }}
-        onProjectDeleted={(id) => {
-          setProjects((prev) => prev.filter((p) => p.id !== id))
-          if (selectedProjectId === id) { setSelectedProjectId(null); setSelectedCampaignId(null) }
         }}
         onCampaignDeleted={(id) => {
           setProjects((prev) => prev.map((p) => ({
@@ -714,12 +711,13 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
 }
 
 // ─── ProjectCampaignBar ───────────────────────────────────────────────────────
+// Projects are read-only (sourced from email briefs).
+// Campaigns are created/deleted here and store the Figma URL.
 
 function ProjectCampaignBar({
   projects, selectedProjectId, selectedCampaignId,
   onProjectSelect, onCampaignSelect,
-  onProjectCreated, onCampaignCreated,
-  onProjectDeleted, onCampaignDeleted,
+  onCampaignCreated, onCampaignDeleted,
   urlSavedToCampaign,
 }: {
   projects: FigmaProject[]
@@ -727,39 +725,16 @@ function ProjectCampaignBar({
   selectedCampaignId: string | null
   onProjectSelect: (id: string) => void
   onCampaignSelect: (id: string) => void
-  onProjectCreated: (p: FigmaProject) => void
   onCampaignCreated: (c: FigmaCampaign) => void
-  onProjectDeleted: (id: string) => void
   onCampaignDeleted: (id: string) => void
   urlSavedToCampaign: boolean
 }) {
-  const [newProjectName, setNewProjectName] = useState('')
   const [newCampaignName, setNewCampaignName] = useState('')
-  const [creatingProject, setCreatingProject] = useState(false)
   const [creatingCampaign, setCreatingCampaign] = useState(false)
-  const [showNewProject, setShowNewProject] = useState(false)
   const [showNewCampaign, setShowNewCampaign] = useState(false)
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId) || null
   const campaigns = selectedProject?.campaigns || []
-
-  async function handleCreateProject() {
-    if (!newProjectName.trim()) return
-    setCreatingProject(true)
-    try {
-      const res = await fetch('/api/figma/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newProjectName }),
-      })
-      const data = await res.json()
-      if (res.ok) {
-        onProjectCreated({ ...data.project, campaigns: [] })
-        setNewProjectName('')
-        setShowNewProject(false)
-      }
-    } finally { setCreatingProject(false) }
-  }
 
   async function handleCreateCampaign() {
     if (!newCampaignName.trim() || !selectedProjectId) return
@@ -779,12 +754,6 @@ function ProjectCampaignBar({
     } finally { setCreatingCampaign(false) }
   }
 
-  async function handleDeleteProject(id: string) {
-    if (!confirm('¿Eliminar proyecto y todas sus campañas?')) return
-    await fetch(`/api/figma/projects/${id}`, { method: 'DELETE' })
-    onProjectDeleted(id)
-  }
-
   async function handleDeleteCampaign(id: string) {
     if (!confirm('¿Eliminar esta campaña?')) return
     await fetch(`/api/figma/campaigns/${id}`, { method: 'DELETE' })
@@ -794,60 +763,35 @@ function ProjectCampaignBar({
   return (
     <div className="card p-4">
       <div className="flex items-center gap-2 mb-3">
-        <span className="text-xs font-semibold text-gray-600">Organización</span>
+        <span className="text-xs font-semibold text-gray-600">Proyecto y Campaña</span>
         {urlSavedToCampaign && (
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-medium ml-auto">
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-medium ml-auto animate-pulse">
             ✓ URL guardada en campaña
           </span>
         )}
       </div>
 
       <div className="flex items-center gap-3 flex-wrap">
-        {/* Project selector */}
+        {/* Project selector — read-only, populated from email briefs */}
         <div className="flex items-center gap-1.5">
           <span className="text-[11px] text-gray-500 font-medium whitespace-nowrap">Proyecto:</span>
-          <select
-            value={selectedProjectId || ''}
-            onChange={(e) => e.target.value && onProjectSelect(e.target.value)}
-            className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-blue-400 bg-white max-w-[180px]"
-          >
-            <option value="">— Seleccionar —</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
-          {selectedProjectId && (
-            <button
-              onClick={() => handleDeleteProject(selectedProjectId)}
-              className="text-gray-300 hover:text-red-400 text-sm leading-none"
-              title="Eliminar proyecto"
-            >×</button>
-          )}
-          {!showNewProject ? (
-            <button
-              onClick={() => setShowNewProject(true)}
-              className="text-[11px] px-2 py-1 rounded border border-dashed border-gray-300 text-gray-500 hover:border-gray-400 whitespace-nowrap"
-            >+ Proyecto</button>
+          {projects.length === 0 ? (
+            <span className="text-xs text-gray-400 italic">
+              Sin proyectos — procesa un brief por email primero
+            </span>
           ) : (
-            <div className="flex gap-1">
-              <input
-                autoFocus
-                type="text"
-                value={newProjectName}
-                onChange={(e) => setNewProjectName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleCreateProject(); if (e.key === 'Escape') setShowNewProject(false) }}
-                placeholder="Nombre del proyecto"
-                className="text-xs border border-blue-300 rounded px-2 py-1 w-36 focus:outline-none"
-              />
-              <button
-                onClick={handleCreateProject}
-                disabled={creatingProject || !newProjectName.trim()}
-                className="text-xs px-2 py-1 bg-blue-600 text-white rounded disabled:opacity-50"
-              >
-                {creatingProject ? '...' : 'Crear'}
-              </button>
-              <button onClick={() => setShowNewProject(false)} className="text-xs px-1.5 py-1 text-gray-500">✕</button>
-            </div>
+            <select
+              value={selectedProjectId || ''}
+              onChange={(e) => e.target.value && onProjectSelect(e.target.value)}
+              className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-blue-400 bg-white max-w-[220px]"
+            >
+              <option value="">— Seleccionar proyecto —</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}{p.city ? ` · ${p.city}` : ''}
+                </option>
+              ))}
+            </select>
           )}
         </div>
 
@@ -861,9 +805,9 @@ function ProjectCampaignBar({
             <select
               value={selectedCampaignId || ''}
               onChange={(e) => e.target.value && onCampaignSelect(e.target.value)}
-              className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-blue-400 bg-white max-w-[180px]"
+              className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-blue-400 bg-white max-w-[200px]"
             >
-              <option value="">— Seleccionar —</option>
+              <option value="">— Seleccionar campaña —</option>
               {campaigns.map((c) => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
@@ -879,17 +823,20 @@ function ProjectCampaignBar({
               <button
                 onClick={() => setShowNewCampaign(true)}
                 className="text-[11px] px-2 py-1 rounded border border-dashed border-gray-300 text-gray-500 hover:border-gray-400 whitespace-nowrap"
-              >+ Campaña</button>
+              >+ Nueva campaña</button>
             ) : (
-              <div className="flex gap-1">
+              <div className="flex gap-1 items-center">
                 <input
                   autoFocus
                   type="text"
                   value={newCampaignName}
                   onChange={(e) => setNewCampaignName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleCreateCampaign(); if (e.key === 'Escape') setShowNewCampaign(false) }}
-                  placeholder="Nombre de campaña"
-                  className="text-xs border border-blue-300 rounded px-2 py-1 w-36 focus:outline-none"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleCreateCampaign()
+                    if (e.key === 'Escape') { setShowNewCampaign(false); setNewCampaignName('') }
+                  }}
+                  placeholder="Ej: Lanzamiento Mayo 2025"
+                  className="text-xs border border-blue-300 rounded px-2 py-1 w-44 focus:outline-none"
                 />
                 <button
                   onClick={handleCreateCampaign}
@@ -898,24 +845,27 @@ function ProjectCampaignBar({
                 >
                   {creatingCampaign ? '...' : 'Crear'}
                 </button>
-                <button onClick={() => setShowNewCampaign(false)} className="text-xs px-1.5 py-1 text-gray-500">✕</button>
+                <button
+                  onClick={() => { setShowNewCampaign(false); setNewCampaignName('') }}
+                  className="text-xs px-1.5 py-1 text-gray-400 hover:text-gray-600"
+                >✕</button>
               </div>
             )}
           </div>
         )}
       </div>
 
-      {/* Breadcrumb info when campaign selected */}
-      {selectedProjectId && selectedCampaignId && (
-        <p className="text-[11px] text-gray-400 mt-2">
-          {selectedProject?.name} › {campaigns.find((c) => c.id === selectedCampaignId)?.name}
-          {' · '}La URL de Figma se guarda automáticamente en esta campaña al cargar el archivo.
-        </p>
-      )}
-
-      {projects.length === 0 && (
-        <p className="text-[11px] text-gray-400 mt-1">
-          Crea un proyecto y una campaña para organizar tus archivos de Figma.
+      {/* Breadcrumb when both selected */}
+      {selectedProject && selectedCampaignId && (
+        <p className="text-[11px] text-gray-400 mt-2 flex items-center gap-1 flex-wrap">
+          <span className="font-medium text-gray-600">{selectedProject.name}</span>
+          {selectedProject.city && <span>· {selectedProject.city}</span>}
+          {selectedProject.stage && (
+            <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">{selectedProject.stage}</span>
+          )}
+          <span className="text-gray-300">›</span>
+          <span className="font-medium text-gray-600">{campaigns.find((c) => c.id === selectedCampaignId)?.name}</span>
+          <span>· La URL se guarda automáticamente en esta campaña al cargar el archivo.</span>
         </p>
       )}
     </div>

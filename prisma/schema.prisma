@@ -42,6 +42,7 @@ model Project {
   trafficEntries TrafficEntry[]
   jiraStructures JiraStructure[]
   pricePieces    PricePiece[]
+  figmaCampaigns FigmaCampaign[]
 
   @@map("projects")
 }
@@ -163,24 +164,14 @@ model Settings {
   @@map("settings")
 }
 
-model FigmaProject {
-  id        String          @id @default(cuid())
-  name      String
-  createdAt DateTime        @default(now())
-  updatedAt DateTime        @updatedAt
-  campaigns FigmaCampaign[]
-
-  @@map("figma_projects")
-}
-
 model FigmaCampaign {
-  id        String       @id @default(cuid())
+  id        String   @id @default(cuid())
   name      String
-  figmaUrl  String       @default("")
+  figmaUrl  String   @default("")
   projectId String
-  project   FigmaProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("figma_campaigns")
 }
