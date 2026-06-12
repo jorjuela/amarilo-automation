@@ -425,9 +425,13 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     try {
       const JSZip = (await import('jszip')).default
       const zip = new JSZip()
+      const seen = new Map<string, number>()
       for (const r of results) {
-        const safeName = r.frameName.replace(/[^a-zA-Z0-9_\-]/g, '_')
-        zip.file(`${safeName}_nuevo_precio.png`, r.blob)
+        const base = r.frameName.replace(/[^a-zA-Z0-9_\-]/g, '_') || 'pieza'
+        const count = seen.get(base) ?? 0
+        seen.set(base, count + 1)
+        const filename = count === 0 ? `${base}_nuevo_precio.png` : `${base}_${count + 1}_nuevo_precio.png`
+        zip.file(filename, r.blob)
       }
       const content = await zip.generateAsync({ type: 'blob' })
       const a = document.createElement('a')
@@ -515,14 +519,22 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     const JSZip = (await import('jszip')).default
     const zip = new JSZip()
 
-    await Promise.all(
+    const blobs = await Promise.all(
       done.map(async (item) => {
         const res = await fetch(item.exportedPng!)
         const blob = await res.blob()
-        const safeName = item.frame.name.replace(/[^a-zA-Z0-9_\-]/g, '_')
-        zip.file(`${safeName}_nuevo_precio.png`, blob)
+        return { name: item.frame.name, blob }
       })
     )
+
+    const seen = new Map<string, number>()
+    for (const { name, blob } of blobs) {
+      const base = name.replace(/[^a-zA-Z0-9_\-]/g, '_') || 'pieza'
+      const count = seen.get(base) ?? 0
+      seen.set(base, count + 1)
+      const filename = count === 0 ? `${base}_nuevo_precio.png` : `${base}_${count + 1}_nuevo_precio.png`
+      zip.file(filename, blob)
+    }
 
     const content = await zip.generateAsync({ type: 'blob' })
     const a = document.createElement('a')
