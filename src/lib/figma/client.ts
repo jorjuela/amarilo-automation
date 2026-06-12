@@ -87,6 +87,9 @@ export interface PriceNode {
   bounds: FigmaBounds
   style: FigmaTextStyle
   color: FigmaColor
+  // The solid fill color of the nearest ancestor/sibling rectangle behind this text.
+  // Used to paint over the old price without canvas sampling.
+  containerColor?: FigmaColor
 }
 
 // ─── Parse Figma file URL → file key ─────────────────────────────────────────
@@ -153,13 +156,24 @@ function looksLikePrice(text: string): boolean {
 // Also enters GROUP/FRAME nodes whose layer name matches "precio" to capture
 // compound price components (e.g. a group named "precio" containing text).
 
+// Returns the first SOLID fill color found in a node's fills array, or undefined.
+function solidFill(node: FigmaNode): FigmaColor | undefined {
+  return node.fills?.find((f) => f.type === 'SOLID' && f.color)?.color
+}
+
 // Walks the entire node tree searching for TEXT nodes whose layer name matches
 // the configured price layer name (or variants), or whose text content looks
 // like a price. Always recurses fully regardless of parent node name.
+//
+// nearestContainerColor: the most recent solid fill seen in an ancestor node.
+// As we descend into GROUP/FRAME nodes that have a solid fill, we update it.
+// When a RECTANGLE sibling is found alongside a TEXT price node (same parent),
+// that rectangle's fill is used as the container color instead.
 function walkForPriceNodes(
   node: FigmaNode,
   frameBounds: FigmaBounds,
   configuredPriceLayerName = 'precio',
+  nearestContainerColor?: FigmaColor,
 ): PriceNode[] {
   const results: PriceNode[] = []
 
@@ -177,14 +191,25 @@ function walkForPriceNodes(
         bounds,
         style: node.style || { fontFamily: 'Inter', fontWeight: 700, fontSize: 24 },
         color: fill?.color || { r: 1, g: 1, b: 1, a: 1 },
+        containerColor: nearestContainerColor,
       })
     }
   }
 
-  // Always recurse into all children — price TEXT node can be at any depth
+  // Always recurse into all children — price TEXT node can be at any depth.
+  // Before recursing into a container node, check if it or a RECTANGLE sibling
+  // provides a solid fill that can serve as the price area background.
   if (node.children) {
+    // Prefer a RECTANGLE/VECTOR child with a solid fill (direct background layer)
+    const bgRect = node.children.find(
+      (c) => (c.type === 'RECTANGLE' || c.type === 'VECTOR') && solidFill(c)
+    )
+    const containerColor = bgRect
+      ? solidFill(bgRect)
+      : (solidFill(node) ?? nearestContainerColor)
+
     for (const child of node.children) {
-      results.push(...walkForPriceNodes(child, frameBounds, configuredPriceLayerName))
+      results.push(...walkForPriceNodes(child, frameBounds, configuredPriceLayerName, containerColor))
     }
   }
 

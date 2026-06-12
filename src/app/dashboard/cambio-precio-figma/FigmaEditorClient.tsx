@@ -33,7 +33,8 @@ interface PriceElement {
   fontSize: number   // px, from Figma
   fontWeight: number
   fontFamily: string
-  color: string      // CSS rgba
+  color: string      // CSS rgba (text color)
+  containerColor?: string  // CSS rgba — solid fill behind price area; used to erase old price
   // Typography fidelity (all sourced from Figma node.style)
   italic: boolean
   letterSpacing: number      // px
@@ -72,6 +73,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
   const [fileKey, setFileKey] = useState('')
   const [fileName, setFileName] = useState('')
   const [mcpAvailable, setMcpAvailable] = useState(false)
+  const [fromCache, setFromCache] = useState(false)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
   const [frames, setFrames] = useState<FrameItem[]>([])
@@ -166,6 +168,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
       setFileKey(data.fileKey)
       setFileName(data.fileName)
       setMcpAvailable(!!data.mcpAvailable)
+      setFromCache(!!data.fromCache)
 
       // Auto-save URL to selected campaign if it changed
       if (selectedCampaignId && selectedCampaign?.figmaUrl !== fileUrl.trim()) {
@@ -632,6 +635,11 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
             ) : (
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
                 solo REST
+              </span>
+            )}
+            {fromCache && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 font-medium">
+                ⚡ desde caché
               </span>
             )}
           </div>
@@ -1445,9 +1453,34 @@ ${fontReadyScript}
 </body></html>`
   }
 
-  // ── Strategy B: canvas color-sampling (no background image available) ───────
-  // Samples the pixel row just above each price area and fills with that color,
-  // effectively painting over the old price with the local background color.
+  // ── Strategy B: erase old price using exact Figma container fills ───────────
+  // Each price element carries containerColor (the solid fill of the rectangle
+  // directly behind it in the Figma layer stack). We use that exact color to
+  // paint over the old price — no sampling needed.
+  // Fallback: if containerColor is missing, sample 1 row above (legacy).
+
+  const hasExactColors = priceElements.every((el) => !!el.containerColor)
+
+  if (hasExactColors) {
+    // Pure CSS — no canvas needed, no __ready signal required.
+    const eraseRects = priceElements.map((el, i) => {
+      const r = priceRectsPx[i]
+      return `<div style="position:absolute;z-index:1;
+        left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;
+        background:${el.containerColor};"></div>`
+    }).join('\n')
+
+    return `<!DOCTYPE html>
+<html><head>${baseHead}</head><body>
+<div class="frame">
+  <img style="position:absolute;inset:0;width:100%;height:100%;z-index:0;display:block;" src="${frameBase64}"/>
+  ${eraseRects}
+  ${overlays}
+</div>
+</body></html>`
+  }
+
+  // ── Strategy B fallback: canvas color-sampling ────────────────────────────
   const sampleScript = priceRectsPx.map((r) => {
     const sampleY = Math.max(0, r.y - Math.ceil(r.h * 0.6))
     return `(function(){`

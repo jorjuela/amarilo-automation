@@ -176,6 +176,19 @@ model FigmaCampaign {
   @@map("figma_campaigns")
 }
 
+model FigmaFileCache {
+  id           String   @id @default(cuid())
+  figmaUrl     String   @unique
+  fileKey      String
+  fileName     String
+  lastModified String
+  framesJson   String   // JSON: DetectedFrame[] with priceNodes + backgroundNode
+  cachedAt     DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("figma_file_cache")
+}
+
 // Stage values: EXPECTATIVA | LANZAMIENTO | SOSTENIMIENTO
 
 model User {

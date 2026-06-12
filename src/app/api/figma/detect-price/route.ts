@@ -34,7 +34,8 @@ export interface PriceElement {
   fontSize: number  // original px size from Figma
   fontWeight: number
   fontFamily: string
-  color: string     // CSS rgba
+  color: string     // CSS rgba (text color)
+  containerColor?: string  // CSS rgba — fill behind this price area (used to erase old price)
   // Typography fidelity — all sourced from Figma node.style
   italic: boolean
   letterSpacing: number      // px (Figma absolute pixel value)
@@ -104,6 +105,7 @@ export async function POST(req: NextRequest) {
       fontWeight: node.style.fontWeight,
       fontFamily: node.style.fontFamily || 'Inter',
       color: figmaColorToCss(fill),
+      containerColor: node.containerColor ? figmaColorToCss(node.containerColor) : undefined,
       // Typography fidelity
       italic: node.style.italic ?? false,
       letterSpacing: node.style.letterSpacing ?? 0,

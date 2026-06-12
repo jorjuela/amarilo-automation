@@ -62,31 +62,53 @@ export async function GET(req: NextRequest) {
     )
   }
 
+  const CACHE_TTL_MS = 60 * 60 * 1000 // 1 hour
+
   try {
     // ── 1. Read configurable layer names from settings ──────────────────────────
-    const settingsRecord = await prisma.settings.findUnique({ where: { id: 'singleton' } })
+    const [settingsRecord, cached] = await Promise.all([
+      prisma.settings.findUnique({ where: { id: 'singleton' } }),
+      prisma.figmaFileCache.findUnique({ where: { figmaUrl: fileUrl } }),
+    ])
     const settingsData = settingsRecord ? JSON.parse(settingsRecord.data) : {}
     const layerOpts: LayerNameOpts = {
       priceLayerName: settingsData.figmaLayers?.priceLayerName || 'precio',
       backgroundLayerName: settingsData.figmaLayers?.backgroundLayerName || 'background',
     }
 
-    // ── 2. Figma REST API: raw file data (absolute bounds + price node styles) ──
+    // ── 2. Return from cache if fresh (< 1 h) ──────────────────────────────────
+    if (cached && Date.now() - cached.cachedAt.getTime() < CACHE_TTL_MS) {
+      const enrichedFrames = JSON.parse(cached.framesJson)
+      return NextResponse.json({
+        fileKey,
+        fileName: cached.fileName,
+        lastModified: cached.lastModified,
+        frames: enrichedFrames,
+        totalFrames: enrichedFrames.length,
+        framesWithPrices: enrichedFrames.filter(
+          (f: DetectedFrame & { mcpHasPriceHints?: boolean }) =>
+            f.priceNodes.length > 0 || f.mcpHasPriceHints
+        ).length,
+        mcpAvailable: false,
+        fromCache: true,
+      })
+    }
+
+    // ── 3. Figma REST API: raw file data (absolute bounds + price node styles) ──
     const file = await getFigmaFile(token, fileKey)
     const frames: DetectedFrame[] = extractFramesFromFile(file, layerOpts)
 
-    // ── 3. Figma MCP: simplified design (price text hints) ──────────────────────
+    // ── 4. Figma MCP: simplified design (price text hints) ──────────────────────
     // Run in parallel; MCP failure is non-fatal — we still return REST data.
     let mcpSummaries: MCPFrameSummary[] = []
     try {
       const design = await figmaMCPGetData(token, fileKey, undefined, 5)
       mcpSummaries = extractFrameSummaries(design)
     } catch (mcpErr) {
-      // MCP is supplementary — log but don't fail the request
       console.warn('[figma/route] MCP unavailable, using REST only:', String(mcpErr).slice(0, 200))
     }
 
-    // ── 4. Merge: enrich REST frames with MCP price hints ───────────────────────
+    // ── 5. Merge: enrich REST frames with MCP price hints ───────────────────────
     const mcpByName = new Map(mcpSummaries.map((s) => [s.name, s]))
     const enrichedFrames = frames.map((f) => {
       const mcp = mcpByName.get(f.name)
@@ -96,6 +118,24 @@ export async function GET(req: NextRequest) {
         mcpHasPriceHints: mcp?.hasPriceHints ?? false,
       }
     })
+
+    // ── 6. Persist to cache (upsert) ────────────────────────────────────────────
+    prisma.figmaFileCache.upsert({
+      where: { figmaUrl: fileUrl },
+      create: {
+        figmaUrl: fileUrl,
+        fileKey,
+        fileName: file.name,
+        lastModified: file.lastModified,
+        framesJson: JSON.stringify(enrichedFrames),
+      },
+      update: {
+        fileKey,
+        fileName: file.name,
+        lastModified: file.lastModified,
+        framesJson: JSON.stringify(enrichedFrames),
+      },
+    }).catch((e) => console.warn('[figma/route] cache write failed:', e))
 
     return NextResponse.json({
       fileKey,
@@ -107,6 +147,7 @@ export async function GET(req: NextRequest) {
         (f) => f.priceNodes.length > 0 || f.mcpHasPriceHints
       ).length,
       mcpAvailable: mcpSummaries.length > 0,
+      fromCache: false,
     })
   } catch (err) {
     const msg = String(err)
