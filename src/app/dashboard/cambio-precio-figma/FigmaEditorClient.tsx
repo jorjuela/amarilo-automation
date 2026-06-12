@@ -366,18 +366,22 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     )
     if (targets.length === 0) return
 
-    // Set price on all at once, then render in parallel
+    // Set price + rendering status on all targets at once
     setFrames((prev) =>
       prev.map((f) =>
-        targets.some((t) => t.frame.id === f.frame.id) ? { ...f, newPrice: globalPrice } : f
+        targets.some((t) => t.frame.id === f.frame.id)
+          ? { ...f, newPrice: globalPrice, status: 'rendering' }
+          : f
       )
     )
 
-    // Use the updated price from globalPrice (state update may be async, so pass directly)
+    // Render all in parallel; collect blobs locally so we can ZIP without waiting for state
+    type RenderResult = { frameId: string; frameName: string; blob: Blob; pngUrl: string }
+    const results: RenderResult[] = []
+
     await Promise.all(
       targets.map(async (item) => {
         if (!item.imageBase64 || item.priceElements.length === 0) return
-        setFrames((prev) => prev.map((f) => f.frame.id === item.frame.id ? { ...f, status: 'rendering' } : f))
         try {
           const { width, height, x: frameX, y: frameY } = item.frame.bounds
           let backgroundBounds: { top: number; left: number; widthPct: number; heightPct: number } | null = null
@@ -400,7 +404,9 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
             body: JSON.stringify({ html, width, height, format: 'png' }),
           })
           if (!res.ok) throw new Error('Export failed')
-          const pngUrl = URL.createObjectURL(await res.blob())
+          const blob = await res.blob()
+          const pngUrl = URL.createObjectURL(blob)
+          results.push({ frameId: item.frame.id, frameName: item.frame.name, blob, pngUrl })
           setFrames((prev) =>
             prev.map((f) => f.frame.id === item.frame.id
               ? { ...f, newPrice: globalPrice, status: 'done', exportedPng: pngUrl } : f)
@@ -413,6 +419,24 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
         }
       })
     )
+
+    // Auto-package: ZIP all successfully rendered pieces and trigger download
+    if (results.length === 0) return
+    try {
+      const JSZip = (await import('jszip')).default
+      const zip = new JSZip()
+      for (const r of results) {
+        const safeName = r.frameName.replace(/[^a-zA-Z0-9_\-]/g, '_')
+        zip.file(`${safeName}_nuevo_precio.png`, r.blob)
+      }
+      const content = await zip.generateAsync({ type: 'blob' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(content)
+      a.download = `figma_precios_${globalPrice.replace(/[^a-zA-Z0-9]/g, '_')}_${results.length}piezas.zip`
+      a.click()
+    } catch {
+      // ZIP failed — user can still download individually
+    }
   }
 
   // ── Render one frame with new price ──────────────────────────────────────
