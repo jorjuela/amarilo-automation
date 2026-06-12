@@ -28,12 +28,26 @@ export async function POST(req: NextRequest) {
       const page = await browser.newPage()
       await page.setViewportSize({ width, height })
       await page.setContent(html, { waitUntil: 'networkidle', timeout: 20000 })
-      // If HTML uses canvas + __ready signal, wait for it; otherwise fixed timeout for fonts
+
+      // Wait for canvas-ready signal (Strategy B: canvas color-sampling)
       const usesCanvas = html.includes('window.__ready')
       if (usesCanvas) {
-        await page.waitForFunction(() => (window as unknown as Record<string, unknown>).__ready === true, { timeout: 10000 }).catch(() => {})
+        await page.waitForFunction(
+          () => (window as unknown as Record<string, unknown>).__ready === true,
+          { timeout: 12000 },
+        ).catch(() => {})
       }
-      await page.waitForTimeout(600)   // wait for fonts / base64 images to render
+
+      // Wait for Google Fonts to load (both strategies when fonts are requested)
+      const usesFonts = html.includes('fonts.googleapis.com') || html.includes('__fontsReady')
+      if (usesFonts) {
+        await page.waitForFunction(
+          () => (window as unknown as Record<string, unknown>).__fontsReady === true,
+          { timeout: 8000 },
+        ).catch(() => {}) // non-fatal: falls back to system font if GFonts slow/unavailable
+      }
+
+      await page.waitForTimeout(200) // brief settle for final paint
 
       const imgFormat = format === 'jpeg' ? 'jpeg' : 'png'
       const screenshot = await page.screenshot({

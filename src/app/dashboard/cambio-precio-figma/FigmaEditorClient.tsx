@@ -34,6 +34,13 @@ interface PriceElement {
   fontWeight: number
   fontFamily: string
   color: string      // CSS rgba
+  // Typography fidelity (all sourced from Figma node.style)
+  italic: boolean
+  letterSpacing: number      // px
+  lineHeightPx: number | null
+  textAlignHorizontal: string // LEFT | CENTER | RIGHT | JUSTIFIED
+  textCase: string           // UPPER | LOWER | TITLE | ORIGINAL | SMALL_CAPS
+  textDecoration: string     // NONE | UNDERLINE | STRIKETHROUGH
 }
 
 // DetectedFrame enriched by the hybrid MCP+REST endpoint
@@ -1119,28 +1126,60 @@ function FrameDetail({
             </div>
           )}
 
-          {/* Detected prices */}
+          {/* Detected prices — style validation summary */}
           {item.priceElements.length > 0 && (
             <div>
               <p className="text-xs font-semibold text-gray-700 mb-2">
-                Precios detectados ({item.priceElements.length}):
+                Precios detectados ({item.priceElements.length}) — estilos a preservar:
               </p>
-              <div className="space-y-1">
-                {item.priceElements.map((el) => (
-                  <div key={el.id} className="flex items-center gap-2 text-xs bg-amber-50 rounded px-2 py-1">
-                    <span className="w-2 h-2 rounded-full bg-yellow-400 flex-shrink-0" />
-                    <span className="font-mono font-semibold text-gray-800">{el.text}</span>
-                    <span className="text-gray-400 text-[10px]">
-                      {el.fontFamily} {el.fontSize}px {el.fontWeight >= 700 ? 'Bold' : ''}
-                    </span>
-                    <span
-                      className="ml-auto w-3 h-3 rounded border border-gray-300 flex-shrink-0"
-                      style={{ background: el.color }}
-                      title={el.color}
-                    />
-                  </div>
-                ))}
+              <div className="space-y-2">
+                {item.priceElements.map((el) => {
+                  const tcLabel = el.textCase && el.textCase !== 'ORIGINAL' ? el.textCase : null
+                  const lsLabel = el.letterSpacing ? `LS ${el.letterSpacing > 0 ? '+' : ''}${el.letterSpacing}px` : null
+                  const lhLabel = el.lineHeightPx ? `LH ${el.lineHeightPx}px` : null
+                  const alignLabel = el.textAlignHorizontal && el.textAlignHorizontal !== 'LEFT' ? el.textAlignHorizontal : null
+                  const badges = [
+                    el.italic ? 'Italic' : null,
+                    tcLabel,
+                    lsLabel,
+                    lhLabel,
+                    alignLabel,
+                    el.textDecoration && el.textDecoration !== 'NONE' ? el.textDecoration : null,
+                  ].filter(Boolean)
+                  return (
+                    <div key={el.id} className="bg-amber-50 rounded px-2 py-2 space-y-1">
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="w-2 h-2 rounded-full bg-yellow-400 flex-shrink-0" />
+                        <span className="font-mono font-semibold text-gray-800">{el.text}</span>
+                        <span
+                          className="ml-auto w-4 h-4 rounded border border-gray-300 flex-shrink-0"
+                          style={{ background: el.color }}
+                          title={`Color: ${el.color}`}
+                        />
+                      </div>
+                      <div className="flex flex-wrap gap-1 pl-4">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white border border-gray-200 text-gray-600">
+                          {el.fontFamily}
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white border border-gray-200 text-gray-600">
+                          {el.fontSize}px
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white border border-gray-200 text-gray-600">
+                          {el.fontWeight >= 700 ? 'Bold' : el.fontWeight >= 500 ? 'Medium' : 'Regular'} ({el.fontWeight})
+                        </span>
+                        {badges.map((b) => (
+                          <span key={b} className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-600">
+                            {b}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
+              <p className="text-[10px] text-gray-400 mt-1.5">
+                Todos estos estilos se aplicarán al nuevo precio automáticamente.
+              </p>
             </div>
           )}
 
@@ -1173,7 +1212,17 @@ function FrameDetail({
                 </button>
               </div>
               <p className="text-xs text-gray-400 mt-1">
-                Tipografía: {item.priceElements[0]?.fontFamily}, {item.priceElements[0]?.fontSize}px
+                {item.priceElements[0] && (
+                  <>
+                    Tipografía: <strong>{item.priceElements[0].fontFamily}</strong>{' '}
+                    {item.priceElements[0].fontSize}px · peso {item.priceElements[0].fontWeight}
+                    {item.priceElements[0].italic ? ' · Italic' : ''}
+                    {item.priceElements[0].textCase && item.priceElements[0].textCase !== 'ORIGINAL'
+                      ? ` · ${item.priceElements[0].textCase}` : ''}
+                    {item.priceElements[0].letterSpacing
+                      ? ` · LS ${item.priceElements[0].letterSpacing}px` : ''}
+                  </>
+                )}
               </p>
             </div>
           )}
@@ -1212,6 +1261,74 @@ function FrameDetail({
 
 const PRICE_MASK_PAD = 6 // px padding around each price element in the mask
 
+// ─── Typography helpers ───────────────────────────────────────────────────────
+
+function textCaseToCss(textCase: string): string {
+  switch (textCase) {
+    case 'UPPER': return 'uppercase'
+    case 'LOWER': return 'lowercase'
+    case 'TITLE': return 'capitalize'
+    case 'SMALL_CAPS': return 'none' // handled via font-variant below
+    default: return 'none'
+  }
+}
+
+function textDecorationToCss(d: string): string {
+  if (d === 'UNDERLINE') return 'underline'
+  if (d === 'STRIKETHROUGH') return 'line-through'
+  return 'none'
+}
+
+function textAlignToCss(a: string): string {
+  if (a === 'CENTER') return 'center'
+  if (a === 'RIGHT') return 'right'
+  if (a === 'JUSTIFIED') return 'justify'
+  return 'left'
+}
+
+// Returns a Google Fonts URL for the given family (weight variants 400+700+900).
+// Returns empty string if the family is known to be unavailable on GFonts.
+function googleFontsUrl(family: string): string {
+  if (!family) return ''
+  // Known non-Google-Fonts commercial fonts — skip network request
+  const NON_GFONTS = new Set([
+    'galano grotesque', 'galano grotesque alt', 'gotham', 'avenir', 'proxima nova',
+    'futura', 'brandon grotesque', 'helvetica neue', 'helvetica', 'arial',
+    'times new roman', 'georgia', 'verdana', 'trebuchet ms',
+  ])
+  if (NON_GFONTS.has(family.toLowerCase())) return ''
+  const encoded = family.replace(/ /g, '+')
+  return `https://fonts.googleapis.com/css2?family=${encoded}:ital,wght@0,400;0,700;0,900;1,400;1,700&display=swap`
+}
+
+// Build one price overlay <div> that faithfully replicates the Figma node style
+function priceOverlayDiv(el: PriceElement, price: string): string {
+  const lineH = el.lineHeightPx ? `${el.lineHeightPx}px` : '1.15'
+  const fontVariant = el.textCase === 'SMALL_CAPS' ? 'small-caps' : 'normal'
+  const styles = [
+    'position:absolute', 'z-index:3',
+    `top:${el.top.toFixed(3)}%`,
+    `left:${el.left.toFixed(3)}%`,
+    `width:${el.widthPct.toFixed(3)}%`,
+    `min-width:max-content`,
+    `font-family:'${el.fontFamily}','Helvetica Neue',Arial,sans-serif`,
+    `font-size:${el.fontSize}px`,
+    `font-weight:${el.fontWeight}`,
+    `font-style:${el.italic ? 'italic' : 'normal'}`,
+    `font-variant:${fontVariant}`,
+    `color:${el.color}`,
+    `letter-spacing:${el.letterSpacing ?? 0}px`,
+    `line-height:${lineH}`,
+    `text-align:${textAlignToCss(el.textAlignHorizontal ?? 'LEFT')}`,
+    `text-transform:${textCaseToCss(el.textCase ?? 'ORIGINAL')}`,
+    `text-decoration:${textDecorationToCss(el.textDecoration ?? 'NONE')}`,
+    'white-space:nowrap',
+    'text-rendering:geometricPrecision',
+    '-webkit-font-smoothing:antialiased',
+  ].join(';')
+  return `<div style="${styles}">${escHtml(price)}</div>`
+}
+
 function buildPriceHtml(
   frameBase64: string,
   priceElements: PriceElement[],
@@ -1232,16 +1349,28 @@ function buildPriceHtml(
     h: Math.min(height, Math.round(el.heightPct / 100 * height) + PRICE_MASK_PAD * 2),
   }))
 
-  // Price text overlays (always z-index 3, same position regardless of strategy)
-  const overlays = priceElements.map((el) => `<div style="
-    position:absolute; z-index:3;
-    top:${el.top.toFixed(3)}%; left:${el.left.toFixed(3)}%;
-    width:${el.widthPct.toFixed(3)}%; min-width:max-content;
-    font-family:'${el.fontFamily}','Helvetica Neue',Arial,sans-serif;
-    font-size:${el.fontSize}px; font-weight:${el.fontWeight};
-    color:${el.color}; white-space:nowrap; line-height:1.15;
-    text-rendering:geometricPrecision; -webkit-font-smoothing:antialiased;
-  ">${escHtml(newPrice)}</div>`).join('\n')
+  // Price text overlays — one per detected element, full typography fidelity
+  const overlays = priceElements.map((el) => priceOverlayDiv(el, newPrice)).join('\n')
+
+  // Font loading — try Google Fonts for each unique family used
+  const families = [...new Set(priceElements.map((el) => el.fontFamily))]
+  const fontLinks = families
+    .map(googleFontsUrl)
+    .filter(Boolean)
+    .map((url) => `<link rel="stylesheet" href="${url}">`)
+    .join('\n')
+
+  // Font-ready signal for Playwright (set after document.fonts.ready resolves)
+  const fontReadyScript = `<script>document.fonts.ready.then(function(){window.__fontsReady=true;});</script>`
+
+  const baseHead = `<meta charset="utf-8">
+${fontLinks}
+${fontReadyScript}
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{width:${width}px;height:${height}px;overflow:hidden}
+  .frame{position:relative;width:${width}px;height:${height}px;overflow:hidden}
+</style>`
 
   // ── Strategy A: SVG mask (requires background image) ───────────────────────
   if (effectiveBg && backgroundBounds) {
@@ -1267,12 +1396,7 @@ function buildPriceHtml(
     const maskUrl = `url("data:image/svg+xml,${encodeURIComponent(svgMask)}")`
 
     return `<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  body{width:${width}px;height:${height}px;overflow:hidden}
-  .frame{position:relative;width:${width}px;height:${height}px;overflow:hidden}
-</style></head><body>
+<html><head>${baseHead}</head><body>
 <div class="frame">
   <img style="position:absolute;z-index:1;
     top:${backgroundBounds.top.toFixed(3)}%;left:${backgroundBounds.left.toFixed(3)}%;
@@ -1300,13 +1424,9 @@ function buildPriceHtml(
   }).join(';')
 
   return `<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  body{width:${width}px;height:${height}px;overflow:hidden}
-  .frame{position:relative;width:${width}px;height:${height}px;overflow:hidden}
-  canvas{position:absolute;inset:0;z-index:1}
-</style></head><body>
+<html><head>${baseHead}
+<style>canvas{position:absolute;inset:0;z-index:1}</style>
+</head><body>
 <div class="frame">
   <canvas id="c" width="${width}" height="${height}"></canvas>
   ${overlays}
@@ -1318,7 +1438,7 @@ img.onload=function(){
   var ctx=canvas.getContext('2d');
   ctx.drawImage(img,0,0,${width},${height});
   ${sampleScript};
-  window.__ready=true;
+  document.fonts.ready.then(function(){window.__ready=true;});
 };
 img.src='${frameBase64}';
 </script>

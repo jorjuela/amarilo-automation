@@ -35,6 +35,13 @@ export interface PriceElement {
   fontWeight: number
   fontFamily: string
   color: string     // CSS rgba
+  // Typography fidelity — all sourced from Figma node.style
+  italic: boolean
+  letterSpacing: number      // px (Figma absolute pixel value)
+  lineHeightPx: number | null
+  textAlignHorizontal: string // LEFT | CENTER | RIGHT | JUSTIFIED
+  textCase: string           // UPPER | LOWER | TITLE | ORIGINAL | SMALL_CAPS
+  textDecoration: string     // NONE | UNDERLINE | STRIKETHROUGH
 }
 
 // ─── Prompt ───────────────────────────────────────────────────────────────────
@@ -97,6 +104,13 @@ export async function POST(req: NextRequest) {
       fontWeight: node.style.fontWeight,
       fontFamily: node.style.fontFamily || 'Inter',
       color: figmaColorToCss(fill),
+      // Typography fidelity
+      italic: node.style.italic ?? false,
+      letterSpacing: node.style.letterSpacing ?? 0,
+      lineHeightPx: node.style.lineHeightPx ?? null,
+      textAlignHorizontal: node.style.textAlignHorizontal ?? 'LEFT',
+      textCase: node.style.textCase ?? 'ORIGINAL',
+      textDecoration: node.style.textDecoration ?? 'NONE',
     })
   }
 
@@ -140,6 +154,13 @@ export async function POST(req: NextRequest) {
           fontWeight: d.isBold ? 700 : 400,
           fontFamily: 'Inter',
           color: d.colorHex || '#FFFFFF',
+          // Vision detections have no style metadata — use safe defaults
+          italic: false,
+          letterSpacing: 0,
+          lineHeightPx: null,
+          textAlignHorizontal: 'LEFT',
+          textCase: 'ORIGINAL',
+          textDecoration: 'NONE',
         })
       }
     } catch (geminiErr) {

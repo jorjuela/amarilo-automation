@@ -20,6 +20,13 @@ export interface FigmaTextStyle {
   letterSpacing?: number
   lineHeightPx?: number
   textAlignHorizontal?: string
+  // Figma typography extras
+  textCase?: string         // UPPER | LOWER | TITLE | ORIGINAL | SMALL_CAPS
+  textDecoration?: string   // UNDERLINE | STRIKETHROUGH | NONE
+  lineHeightUnit?: string   // PIXELS | FONT_SIZE_%
+  letterSpacingUnit?: string // PIXELS | PERCENT
+  fills?: FigmaFill[]       // node-level fills (text color)
+  opacity?: number          // node opacity (0-1)
 }
 
 export interface FigmaBounds {
