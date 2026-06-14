@@ -53,14 +53,17 @@ export interface PriceElement {
 
 // ─── Prompt ───────────────────────────────────────────────────────────────────
 
-const DETECT_PROMPT = `Eres experto en diseño gráfico publicitario inmobiliario colombiano.
-Analiza esta pieza publicitaria de Amarilo y encuentra TODOS los textos que representen precios o valores monetarios.
+const DETECT_PROMPT = `You are a precise visual parser for advertising and marketing creatives.
 
-Responde SOLO con JSON válido — array de objetos:
+Your task: locate every text element in this image that represents a monetary value, price, or numeric financial figure. The creative may be in any language, currency, or market.
+
+Return ONLY a valid JSON array. No explanation, no markdown, no extra text.
+
+Schema per element:
 [
   {
     "id": "price_1",
-    "text": "texto exacto del precio como aparece en la imagen",
+    "text": "exact text string as it appears in the image — preserve formatting, symbols, separators",
     "topPct": 45.5,
     "leftPct": 20.3,
     "widthPct": 40.0,
@@ -71,11 +74,29 @@ Responde SOLO con JSON válido — array de objetos:
   }
 ]
 
-- topPct / leftPct / widthPct: porcentajes (0-100) relativos al tamaño de la imagen
-- Incluye: precios en pesos ($450.000.000), SMMLV (235 SMMLV), "desde $X", "450M", "450 millones"
-- NO incluyas: nombres de proyectos, ciudades, slogans ni textos que no sean valores monetarios
-- Si no hay precios, devuelve []
-- Responde SOLO el JSON, sin texto adicional`
+Field rules:
+- topPct / leftPct: top-left corner of the text bounding box, as % of image height/width (0–100)
+- widthPct: width of the text bounding box as % of image width
+- estimatedFontSizePx: visual font size estimate in pixels at the image's native resolution
+- isBold: true if the stroke weight is visually heavier than body text
+- colorHex: dominant text color in #RRGGBB
+- confidence: "high" (clearly a price), "medium" (likely a price), "low" (ambiguous) — omit low-confidence results
+
+INCLUDE — any of these patterns, in any currency or language:
+- Currency symbols + number: $450,000 · €1.200 · £850k · ¥2,500,000
+- Numeric shorthand: 450M · 1.2B · 850K · 2.5MM
+- Wage/index multiples: 235 SMMLV · 12× minimum wage · 8 UVT
+- Qualified prices: "From $X" · "Desde $X" · "Starting at £X" · "Ab €X"
+- Price ranges: "$400M – $600M" · "€1.200 – €1.500"
+- Per-unit prices: "$5,000/m²" · "USD 120/sqft"
+
+EXCLUDE — never include:
+- Project names, brand names, taglines, slogans
+- Dates, phone numbers, percentages that are not prices (e.g. "30% off" → include the resulting price if shown, not the % itself)
+- Street addresses, postal codes, area measurements without a currency
+- Pure area figures: "120 m²" alone (only include if paired with a price in the same text element)
+
+If no monetary values are present, return [].`
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
