@@ -53,59 +53,115 @@ export interface PriceElement {
 
 // ─── Prompt ───────────────────────────────────────────────────────────────────
 
-const DETECT_PROMPT = `You are a sub-pixel-accurate bounding box detector for price text in advertising creatives.
+const DETECT_PROMPT = `CONTEXT:
+The output will be used to place replacement price overlays on top of the original creative at exact pixel coordinates. Bounding box precision is critical because small positioning errors can cause visible misalignment.
 
-CONTEXT: Your output will be used to position a replacement price overlay on top of the original image at exact pixel coordinates. Bounding box accuracy is critical — a 2% error in position causes visible misalignment.
-TASK: Find every text element that represents a monetary value, price, or numeric financial figure. The creative may be in any language, currency, industry, or market.
-OUTPUT FORMAT — return ONLY a raw JSON array, no markdown fences, no explanation:
+TASK:
+Detect every text element in the image that represents a monetary value, price, payable amount, installment amount, financing amount, rent, fee, rate with currency, or any other market-facing financial figure.
+
+The creative may be in any language, currency, script, country, industry, or layout.
+
+OUTPUT FORMAT:
+Return ONLY a raw JSON array.
+Do NOT return markdown.
+Do NOT return code fences.
+Do NOT return explanations.
+Do NOT return any text before or after the JSON.
+
+Return an array of objects using this exact field structure:
 [
   {
-    "id": "price_1",
-    "text": "exact string as rendered — preserve symbols, separators, line breaks (\\n)",
-    "topPct": 45.20,
-    "leftPct": 20.35,
-    "widthPct": 38.50,
-    "heightPct": 6.80,
-    "estimatedFontSizePx": 48,
-    "isBold": true,
-    "isItalic": false,
-    "colorHex": "#FFFFFF",
-    "confidence": "high"
+    "id": "<sequential_identifier>",
+    "text": "<exact_text_as_rendered>",
+    "topPct": <float_with_2_decimals>,
+    "leftPct": <float_with_2_decimals>,
+    "widthPct": <float_with_2_decimals>,
+    "heightPct": <float_with_2_decimals>,
+    "estimatedFontSizePx": <integer>,
+    "isBold": <boolean>,
+    "isItalic": <boolean>,
+    "colorHex": "<hex_color>",
+    "confidence": "<high_or_medium>"
   }
 ]
 
-BOUNDING BOX RULES (read carefully):
-- topPct / leftPct: top-left corner of the tightest rectangle that encloses all glyphs, as % of image height / width
-- widthPct / heightPct: width and height of that rectangle as % of image width / height
-- Do NOT pad the box — measure the actual ink boundary, not the line-height or container
-- For multi-line price text (e.g. "Desde\\n$450M"), the bounding box must cover all lines as a single element
-- Values must be floats with 2 decimal places
+BOUNDING BOX RULES:
+- topPct and heightPct must be measured relative to the full image height.
+- leftPct and widthPct must be measured relative to the full image width.
+- The bounding box must be the tightest possible rectangle enclosing the actual visible glyphs.
+- Do NOT add padding.
+- Do NOT measure the container, background shape, paragraph box, line-height box, or safe area.
+- Measure only the actual rendered text ink boundary.
+- If a single financial expression is split across multiple lines but visually belongs together, return it as one element with one bounding box.
+- If separate financial expressions are visually independent, return them as separate elements.
+- All percentage coordinates and dimensions must be numeric floats with exactly 2 decimal places.
+
+TEXT RULES:
+- Copy the text exactly as rendered.
+- Preserve symbols, separators, spacing, casing, punctuation, abbreviations, and line breaks.
+- Do NOT normalize.
+- Do NOT translate.
+- Do NOT infer missing characters.
+- Do NOT reformat the text.
 
 FIELD RULES:
-- text: copy the string verbatim including currency symbols, thousands separators, and line breaks
-- estimatedFontSizePx: height of a capital letter in pixels at the image's native resolution
-- isBold: true if stroke weight is visually heavier than surrounding body text
-- isItalic: true if glyphs are slanted
-- colorHex: sample the dominant glyph color (not background), return as #RRGGBB
-- confidence: "high" = unambiguously a price; "medium" = likely a price; omit "low" results entirely
+- id: assign sequential identifiers in reading order.
+- text: exact visible string of the detected financial text element.
+- estimatedFontSizePx: approximate visible capital-letter height, or equivalent dominant glyph height, at the image's native resolution.
+- isBold: true only if the text is visually heavier than nearby non-price body text.
+- isItalic: true only if the glyphs are visibly slanted.
+- colorHex: dominant glyph color only, in uppercase hexadecimal format using #RRGGBB.
+- confidence: use only "high" or "medium".
+- Omit any detection that would be considered low confidence.
 
-INCLUDE — detect all of these, in any language or currency:
-- Currency symbol + digits: $450,000 · €1.200 · £850k · ¥2,500,000 · R$1.2M · AED 3.5M
-- Numeric shorthand: 450M · 1.2B · 850K · 2.5MM · 4.5Cr
-- Index multiples: 235 SMMLV · 12× minimum wage · 8 UVT · 15 NMW
-- Qualified prices: "From $X" · "Desde $X" · "Starting at £X" · "Ab €X" · "À partir de €X"
-- Price ranges within one text block: "$400M – $600M" · "€1.200 – €1.500"
-- Per-unit prices: "$5,000/m²" · "USD 120/sqft" · "€3,500/month"
-- Installment / financing labels: "12× $42,000" · "Cuotas desde $1.2M"
+INCLUDE:
+Detect any text element that functions as a monetary or financial amount, including but not limited to:
+- full prices
+- shorthand price notation
+- qualified prices
+- price ranges
+- per-unit prices
+- installment or financing amounts
+- rent or lease amounts
+- down payments
+- booking or reservation amounts
+- commercial figures expressed through local financial reference units
+- any numeric expression that clearly functions as a price or payable market-facing amount in context
 
-EXCLUDE — never return:
-- Project names, brand names, slogans, legal disclaimers, body copy
-- Standalone percentages that are rates, not prices ("30% off", "6.5% APR")
-- Dates, phone numbers, reference codes, floor/unit numbers
-- Street addresses, postal codes
-- Pure area / dimension figures without a currency ("120 m²", "1,200 sqft")
+EXCLUDE:
+Do NOT return:
+- brand names
+- project names
+- headlines or slogans that are not prices
+- generic body copy
+- disclaimers
+- addresses
+- postal codes
+- phone numbers
+- dates
+- times
+- unit numbers
+- floor numbers
+- reference codes
+- product codes
+- dimensions or area figures without financial meaning
+- standalone percentages that are not payable amounts
+- non-financial quantities, counts, or measurements
 
-If no monetary values are found, return [].`
+DISAMBIGUATION:
+Only return a text element if it functions as a monetary, payable, commercial, or financial figure in context.
+A number by itself is not sufficient unless its role as a financial amount is visually or semantically clear.
+
+DEDUPLICATION:
+- Do NOT duplicate the same visible text element.
+- Do NOT split one grouped price into multiple objects unless the design clearly separates them.
+- If the same financial value appears in different locations, return each visible instance separately.
+
+ORDER:
+Return results in reading order: top-to-bottom, then left-to-right.
+
+EMPTY RESULT:
+If no monetary or financial text is found, return an empty JSON array.`
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
