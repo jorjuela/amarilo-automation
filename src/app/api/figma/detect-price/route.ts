@@ -35,7 +35,13 @@ export interface PriceElement {
   fontWeight: number
   fontFamily: string
   color: string     // CSS rgba (text color)
-  containerColor?: string  // CSS rgba — fill behind this price area (used to erase old price)
+  containerColor?: string  // CSS rgba — fill behind this price area
+  // Full container geometry — used to paint the erase rect at the exact right
+  // size/shape/style, regardless of the price text bounds.
+  containerBounds?: { top: number; left: number; widthPct: number; heightPct: number }
+  containerCornerRadius?: number   // px
+  containerOpacity?: number        // 0-1
+  containerBlendMode?: string      // Figma blend mode, e.g. 'MULTIPLY'
   // Typography fidelity — all sourced from Figma node.style
   italic: boolean
   letterSpacing: number      // px (Figma absolute pixel value)
@@ -94,6 +100,18 @@ export async function POST(req: NextRequest) {
     const relY = node.bounds.y - frameY
     const fill = node.color
 
+    // Container bounds: convert absolute canvas coords → % relative to frame
+    let containerBounds: PriceElement['containerBounds'] | undefined
+    if (node.container?.bounds) {
+      const cb = node.container.bounds
+      containerBounds = {
+        top:      ((cb.y - frameY) / frameH) * 100,
+        left:     ((cb.x - frameX) / frameW) * 100,
+        widthPct:  (cb.width  / frameW) * 100,
+        heightPct: (cb.height / frameH) * 100,
+      }
+    }
+
     results.push({
       id: node.id,
       text: node.text,
@@ -105,7 +123,13 @@ export async function POST(req: NextRequest) {
       fontWeight: node.style.fontWeight,
       fontFamily: node.style.fontFamily || 'Inter',
       color: figmaColorToCss(fill),
-      containerColor: node.containerColor ? figmaColorToCss(node.containerColor) : undefined,
+      containerColor: node.container?.color
+        ? figmaColorToCss(node.container.color)
+        : (node.containerColor ? figmaColorToCss(node.containerColor) : undefined),
+      containerBounds,
+      containerCornerRadius: node.container?.cornerRadius,
+      containerOpacity: node.container?.opacity,
+      containerBlendMode: node.container?.blendMode,
       // Typography fidelity
       italic: node.style.italic ?? false,
       letterSpacing: node.style.letterSpacing ?? 0,

@@ -6,9 +6,32 @@ export interface FigmaColor {
   r: number; g: number; b: number; a: number
 }
 
-export interface FigmaFill {
-  type: string
+export interface FigmaGradientStop {
+  color: FigmaColor
+  position: number
+}
+
+export interface FigmaEffect {
+  type: string   // DROP_SHADOW | INNER_SHADOW | LAYER_BLUR | BACKGROUND_BLUR
+  visible?: boolean
+  radius?: number
   color?: FigmaColor
+  offset?: { x: number; y: number }
+  spread?: number
+}
+
+export interface FigmaFill {
+  type: string   // SOLID | GRADIENT_LINEAR | GRADIENT_RADIAL | IMAGE | GRADIENT_ANGULAR
+  visible?: boolean
+  opacity?: number
+  blendMode?: string
+  color?: FigmaColor
+  // Gradient
+  gradientHandlePositions?: Array<{ x: number; y: number }>
+  gradientStops?: FigmaGradientStop[]
+  // Image
+  imageRef?: string
+  scaleMode?: string   // FILL | FIT | CROP | TILE
 }
 
 export interface FigmaTextStyle {
@@ -42,7 +65,16 @@ export interface FigmaNode {
   characters?: string           // TEXT nodes only
   style?: FigmaTextStyle        // TEXT nodes only
   fills?: FigmaFill[]
+  strokes?: FigmaFill[]
+  strokeWeight?: number
+  strokeAlign?: string          // INSIDE | OUTSIDE | CENTER
   visible?: boolean
+  opacity?: number
+  cornerRadius?: number
+  rectangleCornerRadii?: [number, number, number, number]
+  clipsContent?: boolean        // FRAME nodes
+  effects?: FigmaEffect[]
+  blendMode?: string
 }
 
 export interface FigmaPage {
@@ -80,6 +112,17 @@ export interface DetectedFrame {
   pageName: string
 }
 
+// Full visual data of the rectangle that sits directly behind the price TEXT node.
+// Carrying bounds + visual properties lets the erase rectangle match the container
+// exactly (same position, size, corner radius, opacity, blend mode).
+export interface PriceContainer {
+  color: FigmaColor
+  bounds: FigmaBounds        // absolute canvas coords (same system as node.absoluteBoundingBox)
+  cornerRadius?: number
+  opacity?: number           // 0-1; undefined means 1
+  blendMode?: string         // Figma blend mode string, e.g. 'MULTIPLY'
+}
+
 export interface PriceNode {
   id: string
   name: string
@@ -87,9 +130,10 @@ export interface PriceNode {
   bounds: FigmaBounds
   style: FigmaTextStyle
   color: FigmaColor
-  // The solid fill color of the nearest ancestor/sibling rectangle behind this text.
-  // Used to paint over the old price without canvas sampling.
+  // Backward-compat: fill color only (kept so existing callers don't break)
   containerColor?: FigmaColor
+  // Full container info — use this for accurate erase rectangles
+  container?: PriceContainer
 }
 
 // ─── Parse Figma file URL → file key ─────────────────────────────────────────
@@ -161,19 +205,31 @@ function solidFill(node: FigmaNode): FigmaColor | undefined {
   return node.fills?.find((f) => f.type === 'SOLID' && f.color)?.color
 }
 
+// Build a PriceContainer from a node that acts as the visual background of the price.
+function makeContainer(node: FigmaNode): PriceContainer | undefined {
+  const color = solidFill(node)
+  const bounds = node.absoluteBoundingBox
+  if (!color || !bounds) return undefined
+  return {
+    color,
+    bounds,
+    cornerRadius: node.cornerRadius,
+    opacity: node.opacity,
+    blendMode: node.blendMode,
+  }
+}
+
 // Walks the entire node tree searching for TEXT nodes whose layer name matches
 // the configured price layer name (or variants), or whose text content looks
-// like a price. Always recurses fully regardless of parent node name.
+// like a price.
 //
-// nearestContainerColor: the most recent solid fill seen in an ancestor node.
-// As we descend into GROUP/FRAME nodes that have a solid fill, we update it.
-// When a RECTANGLE sibling is found alongside a TEXT price node (same parent),
-// that rectangle's fill is used as the container color instead.
+// nearestContainer: the closest ancestor/sibling container node found so far.
+// Priority: RECTANGLE/VECTOR sibling of the TEXT's parent > parent fill > inherited.
 function walkForPriceNodes(
   node: FigmaNode,
   frameBounds: FigmaBounds,
   configuredPriceLayerName = 'precio',
-  nearestContainerColor?: FigmaColor,
+  nearestContainer?: PriceContainer,
 ): PriceNode[] {
   const results: PriceNode[] = []
 
@@ -191,25 +247,24 @@ function walkForPriceNodes(
         bounds,
         style: node.style || { fontFamily: 'Inter', fontWeight: 700, fontSize: 24 },
         color: fill?.color || { r: 1, g: 1, b: 1, a: 1 },
-        containerColor: nearestContainerColor,
+        containerColor: nearestContainer?.color,
+        container: nearestContainer,
       })
     }
   }
 
-  // Always recurse into all children — price TEXT node can be at any depth.
-  // Before recursing into a container node, check if it or a RECTANGLE sibling
-  // provides a solid fill that can serve as the price area background.
+  // Recurse into children, passing the best container found at this level.
   if (node.children) {
-    // Prefer a RECTANGLE/VECTOR child with a solid fill (direct background layer)
+    // Prefer a RECTANGLE/VECTOR child with a solid fill (direct background rect)
     const bgRect = node.children.find(
       (c) => (c.type === 'RECTANGLE' || c.type === 'VECTOR') && solidFill(c)
     )
-    const containerColor = bgRect
-      ? solidFill(bgRect)
-      : (solidFill(node) ?? nearestContainerColor)
+    const childContainer = bgRect
+      ? makeContainer(bgRect)
+      : (makeContainer(node) ?? nearestContainer)
 
     for (const child of node.children) {
-      results.push(...walkForPriceNodes(child, frameBounds, configuredPriceLayerName, containerColor))
+      results.push(...walkForPriceNodes(child, frameBounds, configuredPriceLayerName, childContainer))
     }
   }
 
@@ -287,6 +342,20 @@ async function figmaFetch<T>(token: string, path: string): Promise<T> {
 export async function getFigmaFile(token: string, fileKey: string): Promise<FigmaFile> {
   // depth=6: doc→page→section→frame→children→text — needed for files with Sections
   return figmaFetch<FigmaFile>(token, `/files/${fileKey}?depth=6`)
+}
+
+// Returns all image fills used in the file: { imageRef → CDN URL }
+// CDN URLs are signed S3 links valid for ~24 h.
+export async function getFileImages(token: string, fileKey: string): Promise<Record<string, string>> {
+  try {
+    const data = await figmaFetch<{ meta?: { images?: Record<string, string> } }>(
+      token,
+      `/files/${fileKey}/images`,
+    )
+    return data.meta?.images ?? {}
+  } catch {
+    return {}
+  }
 }
 
 export async function exportFigmaFrames(

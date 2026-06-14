@@ -35,6 +35,11 @@ interface PriceElement {
   fontFamily: string
   color: string      // CSS rgba (text color)
   containerColor?: string  // CSS rgba — solid fill behind price area; used to erase old price
+  // Full container geometry — use for accurate erase rect (overrides text bounds + padding)
+  containerBounds?: { top: number; left: number; widthPct: number; heightPct: number }
+  containerCornerRadius?: number  // px
+  containerOpacity?: number       // 0-1
+  containerBlendMode?: string     // Figma blend mode, e.g. 'MULTIPLY'
   // Typography fidelity (all sourced from Figma node.style)
   italic: boolean
   letterSpacing: number      // px
@@ -1298,17 +1303,23 @@ function FrameDetail({
 // (background photo, logos, overlays, all design elements). We only paint over
 // the price area and overlay new text on top.
 //
-// Rendering stack:
-//   z-index 0  │  frame PNG (complete, never masked)
-//   z-index 1  │  [opt] new background image — only visible at bgNode bounds
-//              │  price-erase rect(s) — exact containerColor fills
-//   z-index 2  │  new price text overlays (exact Figma typography)
-//
-// Price-erase strategy (in order of preference):
-//   A. Exact color  — containerColor from Figma tree walk (solid fill behind text)
-//   B. Canvas scan  — sample median color around price area (fallback)
+// Price-erase strategies (applied per element, best available wins):
+//   A. Exact color   — containerColor from Figma tree walk (solid fill behind text)
+//   B. Bg image crop — copy pixels from the exported background node image (image bg)
+//   C. Median sample — sample pixels from 3 edges around price area (last resort)
 
-const PRICE_MASK_PAD = 8 // px padding around each price element in the erase rect
+const PRICE_MASK_PAD = 8 // px padding around each price element when no container bounds
+
+function figmaBlendModeToCss(mode: string): string {
+  const MAP: Record<string, string> = {
+    MULTIPLY: 'multiply', SCREEN: 'screen', OVERLAY: 'overlay',
+    DARKEN: 'darken', LIGHTEN: 'lighten', COLOR_DODGE: 'color-dodge',
+    COLOR_BURN: 'color-burn', HARD_LIGHT: 'hard-light', SOFT_LIGHT: 'soft-light',
+    DIFFERENCE: 'difference', EXCLUSION: 'exclusion', HUE: 'hue',
+    SATURATION: 'saturation', COLOR: 'color', LUMINOSITY: 'luminosity',
+  }
+  return MAP[mode] ?? 'normal'
+}
 
 // ─── Typography helpers ───────────────────────────────────────────────────────
 
@@ -1388,13 +1399,32 @@ function buildPriceHtml(
   backgroundBounds: { top: number; left: number; widthPct: number; heightPct: number } | null = null,
   backgroundImageBase64: string | null = null,
 ): string {
-  // Price element bounding boxes in px (+padding to fully cover text edges)
-  const priceRectsPx = priceElements.map((el) => ({
-    x: Math.max(0, Math.round(el.left   / 100 * width)  - PRICE_MASK_PAD),
-    y: Math.max(0, Math.round(el.top    / 100 * height) - PRICE_MASK_PAD),
-    w: Math.min(width,  Math.round(el.widthPct  / 100 * width)  + PRICE_MASK_PAD * 2),
-    h: Math.min(height, Math.round(el.heightPct / 100 * height) + PRICE_MASK_PAD * 2),
-  }))
+  // Price element bounding boxes in px.
+  // Use container bounds (exact Figma geometry) when available; else text bounds + padding.
+  const priceRectsPx = priceElements.map((el) => {
+    if (el.containerBounds) {
+      return {
+        x: Math.max(0, Math.round(el.containerBounds.left     / 100 * width)),
+        y: Math.max(0, Math.round(el.containerBounds.top      / 100 * height)),
+        w: Math.min(width,  Math.round(el.containerBounds.widthPct  / 100 * width)),
+        h: Math.min(height, Math.round(el.containerBounds.heightPct / 100 * height)),
+        containerColor: el.containerColor ?? null,
+        cornerRadius: el.containerCornerRadius ?? 0,
+        opacity: el.containerOpacity ?? 1,
+        blendMode: el.containerBlendMode ?? 'NORMAL',
+      }
+    }
+    return {
+      x: Math.max(0, Math.round(el.left   / 100 * width)  - PRICE_MASK_PAD),
+      y: Math.max(0, Math.round(el.top    / 100 * height) - PRICE_MASK_PAD),
+      w: Math.min(width,  Math.round(el.widthPct  / 100 * width)  + PRICE_MASK_PAD * 2),
+      h: Math.min(height, Math.round(el.heightPct / 100 * height) + PRICE_MASK_PAD * 2),
+      containerColor: el.containerColor ?? null,
+      cornerRadius: 0,
+      opacity: 1,
+      blendMode: 'NORMAL',
+    }
+  })
 
   // Price text overlays — one per detected element, full typography fidelity
   const overlays = priceElements.map((el) => priceOverlayDiv(el, newPrice)).join('\n')
@@ -1417,10 +1447,9 @@ ${fontLinks}
 </style>`
 
   // ── Optional background swap ────────────────────────────────────────────────
-  // When user uploads a new background image, replace ONLY that region.
-  // The frame PNG is masked ONLY at the backgroundNode bounds — all other design
-  // elements (logos, overlays, typography, shapes) remain fully visible.
-  const effectiveBg = newBackground || backgroundImageBase64
+  // When the user uploads a new background, show it underneath the frame and
+  // mask the frame ONLY at the backgroundNode bounds so design elements stay.
+  const effectiveBg = newBackground || null  // only user-uploaded swap, not original
   let bgLayer = ''
   let frameMaskStyle = ''
 
@@ -1444,17 +1473,22 @@ ${fontLinks}
     frameMaskStyle = `mask-image:url("data:image/svg+xml,${svgMask}");mask-size:100% 100%;`
   }
 
-  // ── Strategy A: exact Figma containerColor (pure CSS, no canvas) ───────────
-  // containerColor = the solid fill of the rectangle directly behind each price
-  // TEXT node in Figma's layer stack (extracted during tree walk in client.ts).
+  // ── Strategy A: ALL elements have a solid containerColor → pure CSS, no canvas ──
+  // Fastest and most accurate for solid-fill price backgrounds (e.g. colored boxes).
   const hasExactColors = priceElements.every((el) => !!el.containerColor)
 
   if (hasExactColors) {
     const eraseRects = priceElements.map((el, i) => {
       const r = priceRectsPx[i]
+      let extra = ''
+      if (r.cornerRadius > 0) extra += `border-radius:${r.cornerRadius}px;`
+      if (r.opacity < 0.999) extra += `opacity:${r.opacity.toFixed(3)};`
+      if (r.blendMode && r.blendMode !== 'NORMAL') {
+        extra += `mix-blend-mode:${figmaBlendModeToCss(r.blendMode)};`
+      }
       return `<div style="position:absolute;z-index:2;pointer-events:none;`
         + `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;`
-        + `background:${el.containerColor};"></div>`
+        + `background:${el.containerColor};${extra}"></div>`
     }).join('\n')
 
     return `<!DOCTYPE html>
@@ -1468,40 +1502,113 @@ ${fontLinks}
 </body></html>`
   }
 
-  // ── Strategy B: canvas median-color sampling ────────────────────────────────
-  // Used when no containerColor is available (e.g. price on image/gradient bg).
-  // Samples a strip of pixels just above each price area and uses that color.
-  const sampleScript = priceRectsPx.map((r) => {
-    const sampleY = Math.max(0, r.y - 4)
-    const sampleH = Math.max(1, Math.min(4, r.y))
-    return `(function(){`
-      + `var d=ctx.getImageData(${r.x},${sampleY},${r.w},${sampleH}).data;`
-      + `var rs=0,gs=0,bs=0,n=Math.max(d.length/4,1);`
-      + `for(var i=0;i<d.length;i+=4){rs+=d[i];gs+=d[i+1];bs+=d[i+2]}`
-      + `ctx.fillStyle='rgb('+(rs/n|0)+','+(gs/n|0)+','+(bs/n|0)+')';`
-      + `ctx.fillRect(${r.x},${r.y},${r.w},${r.h});`
-      + `})()`
-  }).join(';')
+  // ── Strategies B / C: canvas-based erasure ──────────────────────────────────
+  // Used when any element lacks containerColor (price on image / gradient bg).
+  //
+  // Per element (best available):
+  //   B  containerColor present → canvas fillRect with that color (exact)
+  //   B1 backgroundImageBase64 → drawImage crop from bg export (image bg match)
+  //   C  fallback → sample pixels from 3 surrounding edges, median brightness fill
+
+  const bgPxObj = backgroundBounds ? {
+    x: Math.round(backgroundBounds.left     / 100 * width),
+    y: Math.round(backgroundBounds.top      / 100 * height),
+    w: Math.round(backgroundBounds.widthPct / 100 * width),
+    h: Math.round(backgroundBounds.heightPct / 100 * height),
+  } : null
+
+  const priceRectsJson = JSON.stringify(priceRectsPx)
+  const bgPxJson       = JSON.stringify(bgPxObj)
+  // backgroundImageBase64 may be null when there's no named background node
+  const hasBgSrc       = !!backgroundImageBase64
+  const bgSrcAttr      = hasBgSrc ? `data-bgsrc="${backgroundImageBase64}"` : ''
+
+  // frameMaskStyle on the canvas element handles background-swap masking in canvas mode
+  const canvasStyle = `position:absolute;inset:0;z-index:1;width:100%;height:100%;display:block;${frameMaskStyle}`
 
   return `<!DOCTYPE html>
 <html><head>${baseHead}
-<style>.cv{position:absolute;inset:0;z-index:1;width:100%;height:100%;display:block;}</style>
 </head><body>
 <div class="frame">
   ${bgLayer}
-  <canvas id="c" class="cv" width="${width}" height="${height}"></canvas>
+  <canvas id="c" style="${canvasStyle}" width="${width}" height="${height}" ${bgSrcAttr}></canvas>
   ${overlays}
 </div>
 <script>
-var img=new Image();
-img.onload=function(){
-  var cv=document.getElementById('c');
-  var ctx=cv.getContext('2d');
-  ctx.drawImage(img,0,0,${width},${height});
-  ${sampleScript};
+(function(){
+var W=${width},H=${height};
+var priceRects=${priceRectsJson};
+var bgPx=${bgPxJson};
+var cv=document.getElementById('c');
+var ctx=cv.getContext('2d');
+
+var BLEND_MAP={'MULTIPLY':'multiply','SCREEN':'screen','OVERLAY':'overlay','DARKEN':'darken','LIGHTEN':'lighten','COLOR_DODGE':'color-dodge','COLOR_BURN':'color-burn','HARD_LIGHT':'hard-light','SOFT_LIGHT':'soft-light','DIFFERENCE':'difference','EXCLUSION':'exclusion','HUE':'hue','SATURATION':'saturation','COLOR':'color','LUMINOSITY':'luminosity'};
+function applyRoundRect(x,y,w,h,cr){
+  if(cr>0&&ctx.roundRect){ctx.beginPath();ctx.roundRect(x,y,w,h,cr);ctx.fill();}
+  else{ctx.fillRect(x,y,w,h);}
+}
+function eraseRects(bgImgEl){
+  priceRects.forEach(function(r){
+    var cr=r.cornerRadius||0;
+    var op=r.opacity!=null?r.opacity:1;
+    var bm=r.blendMode&&r.blendMode!=='NORMAL'?(BLEND_MAP[r.blendMode]||'source-over'):'source-over';
+    ctx.save();
+    ctx.globalAlpha=op;
+    ctx.globalCompositeOperation=bm;
+    if(r.containerColor){
+      // Strategy B: exact solid fill from Figma tree (correct color, shape, opacity, blend)
+      ctx.fillStyle=r.containerColor;
+      applyRoundRect(r.x,r.y,r.w,r.h,cr);
+    } else if(bgImgEl&&bgPx&&bgPx.w>0&&bgPx.h>0){
+      // Strategy B1: crop background image at price position (image bg)
+      ctx.restore();ctx.save();
+      var scaleX=bgImgEl.naturalWidth/bgPx.w;
+      var scaleY=bgImgEl.naturalHeight/bgPx.h;
+      var srcX=Math.max(0,(r.x-bgPx.x)*scaleX);
+      var srcY=Math.max(0,(r.y-bgPx.y)*scaleY);
+      var srcW=Math.min(bgImgEl.naturalWidth -srcX, r.w*scaleX);
+      var srcH=Math.min(bgImgEl.naturalHeight-srcY, r.h*scaleY);
+      if(srcW>0&&srcH>0){
+        if(cr>0&&ctx.roundRect){ctx.beginPath();ctx.roundRect(r.x,r.y,r.w,r.h,cr);ctx.clip();}
+        ctx.drawImage(bgImgEl,srcX,srcY,srcW,srcH,r.x,r.y,r.w,r.h);
+      }
+    } else {
+      // Strategy C: multi-edge median pixel sampling
+      ctx.restore();ctx.save();
+      var samples=[];
+      function addSamples(d){if(!d)return;for(var i=0;i<d.length;i+=4)samples.push([d[i],d[i+1],d[i+2]]);}
+      if(r.y>=8) addSamples(ctx.getImageData(r.x,Math.max(0,r.y-8),r.w,8).data);
+      if(r.y+r.h+8<H) addSamples(ctx.getImageData(r.x,r.y+r.h,r.w,8).data);
+      if(r.x>=8) addSamples(ctx.getImageData(Math.max(0,r.x-8),r.y,8,r.h).data);
+      if(samples.length>0){
+        samples.sort(function(a,b){return(a[0]+a[1]+a[2])-(b[0]+b[1]+b[2]);});
+        var m=samples[Math.floor(samples.length/2)];
+        ctx.fillStyle='rgb('+m[0]+','+m[1]+','+m[2]+')';
+      } else {
+        ctx.fillStyle='rgba(0,0,0,0)';
+      }
+      applyRoundRect(r.x,r.y,r.w,r.h,cr);
+    }
+    ctx.restore();
+  });
   document.fonts.ready.then(function(){window.__ready=true;});
+}
+
+var frameImg=new Image();
+frameImg.onload=function(){
+  ctx.drawImage(frameImg,0,0,W,H);
+  var bgsrc=cv.getAttribute('data-bgsrc');
+  if(bgsrc){
+    var bgImgEl=new Image();
+    bgImgEl.onload=function(){eraseRects(bgImgEl);};
+    bgImgEl.onerror=function(){eraseRects(null);};
+    bgImgEl.src=bgsrc;
+  } else {
+    eraseRects(null);
+  }
 };
-img.src='${frameBase64}';
+frameImg.src='${frameBase64}';
+})();
 </script>
 </body></html>`
 }
