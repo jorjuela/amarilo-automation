@@ -53,50 +53,59 @@ export interface PriceElement {
 
 // ─── Prompt ───────────────────────────────────────────────────────────────────
 
-const DETECT_PROMPT = `You are a precise visual parser for advertising and marketing creatives.
+const DETECT_PROMPT = `You are a sub-pixel-accurate bounding box detector for price text in advertising creatives.
 
-Your task: locate every text element in this image that represents a monetary value, price, or numeric financial figure. The creative may be in any language, currency, or market.
-
-Return ONLY a valid JSON array. No explanation, no markdown, no extra text.
-
-Schema per element:
+CONTEXT: Your output will be used to position a replacement price overlay on top of the original image at exact pixel coordinates. Bounding box accuracy is critical — a 2% error in position causes visible misalignment.
+TASK: Find every text element that represents a monetary value, price, or numeric financial figure. The creative may be in any language, currency, industry, or market.
+OUTPUT FORMAT — return ONLY a raw JSON array, no markdown fences, no explanation:
 [
   {
     "id": "price_1",
-    "text": "exact text string as it appears in the image — preserve formatting, symbols, separators",
-    "topPct": 45.5,
-    "leftPct": 20.3,
-    "widthPct": 40.0,
+    "text": "exact string as rendered — preserve symbols, separators, line breaks (\\n)",
+    "topPct": 45.20,
+    "leftPct": 20.35,
+    "widthPct": 38.50,
+    "heightPct": 6.80,
     "estimatedFontSizePx": 48,
     "isBold": true,
+    "isItalic": false,
     "colorHex": "#FFFFFF",
     "confidence": "high"
   }
 ]
 
-Field rules:
-- topPct / leftPct: top-left corner of the text bounding box, as % of image height/width (0–100)
-- widthPct: width of the text bounding box as % of image width
-- estimatedFontSizePx: visual font size estimate in pixels at the image's native resolution
-- isBold: true if the stroke weight is visually heavier than body text
-- colorHex: dominant text color in #RRGGBB
-- confidence: "high" (clearly a price), "medium" (likely a price), "low" (ambiguous) — omit low-confidence results
+BOUNDING BOX RULES (read carefully):
+- topPct / leftPct: top-left corner of the tightest rectangle that encloses all glyphs, as % of image height / width
+- widthPct / heightPct: width and height of that rectangle as % of image width / height
+- Do NOT pad the box — measure the actual ink boundary, not the line-height or container
+- For multi-line price text (e.g. "Desde\\n$450M"), the bounding box must cover all lines as a single element
+- Values must be floats with 2 decimal places
 
-INCLUDE — any of these patterns, in any currency or language:
-- Currency symbols + number: $450,000 · €1.200 · £850k · ¥2,500,000
-- Numeric shorthand: 450M · 1.2B · 850K · 2.5MM
-- Wage/index multiples: 235 SMMLV · 12× minimum wage · 8 UVT
-- Qualified prices: "From $X" · "Desde $X" · "Starting at £X" · "Ab €X"
-- Price ranges: "$400M – $600M" · "€1.200 – €1.500"
-- Per-unit prices: "$5,000/m²" · "USD 120/sqft"
+FIELD RULES:
+- text: copy the string verbatim including currency symbols, thousands separators, and line breaks
+- estimatedFontSizePx: height of a capital letter in pixels at the image's native resolution
+- isBold: true if stroke weight is visually heavier than surrounding body text
+- isItalic: true if glyphs are slanted
+- colorHex: sample the dominant glyph color (not background), return as #RRGGBB
+- confidence: "high" = unambiguously a price; "medium" = likely a price; omit "low" results entirely
 
-EXCLUDE — never include:
-- Project names, brand names, taglines, slogans
-- Dates, phone numbers, percentages that are not prices (e.g. "30% off" → include the resulting price if shown, not the % itself)
-- Street addresses, postal codes, area measurements without a currency
-- Pure area figures: "120 m²" alone (only include if paired with a price in the same text element)
+INCLUDE — detect all of these, in any language or currency:
+- Currency symbol + digits: $450,000 · €1.200 · £850k · ¥2,500,000 · R$1.2M · AED 3.5M
+- Numeric shorthand: 450M · 1.2B · 850K · 2.5MM · 4.5Cr
+- Index multiples: 235 SMMLV · 12× minimum wage · 8 UVT · 15 NMW
+- Qualified prices: "From $X" · "Desde $X" · "Starting at £X" · "Ab €X" · "À partir de €X"
+- Price ranges within one text block: "$400M – $600M" · "€1.200 – €1.500"
+- Per-unit prices: "$5,000/m²" · "USD 120/sqft" · "€3,500/month"
+- Installment / financing labels: "12× $42,000" · "Cuotas desde $1.2M"
 
-If no monetary values are present, return [].`
+EXCLUDE — never return:
+- Project names, brand names, slogans, legal disclaimers, body copy
+- Standalone percentages that are rates, not prices ("30% off", "6.5% APR")
+- Dates, phone numbers, reference codes, floor/unit numbers
+- Street addresses, postal codes
+- Pure area / dimension figures without a currency ("120 m²", "1,200 sqft")
+
+If no monetary values are found, return [].`
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
@@ -178,8 +187,10 @@ export async function POST(req: NextRequest) {
       const raw = result.response.text().trim()
       const m = raw.match(/```(?:json)?\s*([\s\S]*?)```/) || raw.match(/(\[[\s\S]*\])/)
       const detected = JSON.parse(m ? m[1] : raw) as Array<{
-        id: string; text: string; topPct: number; leftPct: number; widthPct?: number
-        estimatedFontSizePx: number; isBold: boolean; colorHex: string; confidence: string
+        id: string; text: string; topPct: number; leftPct: number
+        widthPct?: number; heightPct?: number
+        estimatedFontSizePx: number; isBold: boolean; isItalic?: boolean
+        colorHex: string; confidence: string
       }>
 
       const existingTexts = new Set(results.map((r) => r.text.trim().toLowerCase()))
@@ -190,19 +201,24 @@ export async function POST(req: NextRequest) {
         if (!normalizedText || existingTexts.has(normalizedText.toLowerCase())) continue
 
         existingTexts.add(normalizedText.toLowerCase())
+        const fsPx = Number(d.estimatedFontSizePx) || 32
+        // heightPct from Gemini when available; fallback to font-size-based estimate
+        const hPct = d.heightPct
+          ? Number(d.heightPct)
+          : (fsPx / frameH) * 100 * 1.4
+
         results.push({
           id: `vision_${results.length}`,
           text: normalizedText,
           top: Number(d.topPct) || 50,
           left: Number(d.leftPct) || 50,
           widthPct: Number(d.widthPct) || 30,
-          heightPct: (Number(d.estimatedFontSizePx) / frameH) * 100 * 1.4,
-          fontSize: Number(d.estimatedFontSizePx) || 32,
+          heightPct: hPct,
+          fontSize: fsPx,
           fontWeight: d.isBold ? 700 : 400,
           fontFamily: 'Inter',
           color: d.colorHex || '#FFFFFF',
-          // Vision detections have no style metadata — use safe defaults
-          italic: false,
+          italic: d.isItalic ?? false,
           letterSpacing: 0,
           lineHeightPx: null,
           textAlignHorizontal: 'LEFT',
