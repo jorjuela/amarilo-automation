@@ -1566,8 +1566,30 @@ function buildPriceHtml(
     }
   })
 
-  // Price text overlays — one per detected element, full typography fidelity
-  const overlays = priceElements.map((el) => priceOverlayDiv(el, newPrice)).join('\n')
+  // Per-element text rendering data — absolute pixel coords for canvas drawText().
+  // No CSS divs: canvas draws the new price at the exact same pixel location
+  // as the original Figma text node, using textBaseline:'middle' so vertical
+  // placement is independent of font-metric leading differences.
+  const priceTextDataPx = priceElements.map((el) => {
+    const x = Math.round(el.left     / 100 * width)
+    const y = Math.round(el.top      / 100 * height)
+    const w = Math.round(el.widthPct / 100 * width)
+    const h = Math.round(el.heightPct / 100 * height)
+    return {
+      x, y, w, h,
+      midY: y + Math.round(h / 2),          // vertical midpoint of text node bounds
+      fontSize: el.fontSize,
+      fontWeight: el.fontWeight,
+      fontFamily: el.fontFamily,
+      italic: el.italic ?? false,
+      color: el.color,
+      align: el.textAlignHorizontal === 'CENTER' ? 'center'
+           : el.textAlignHorizontal === 'RIGHT'  ? 'right'
+           : 'left',
+      letterSpacing: el.letterSpacing ?? 0,
+      textCase: el.textCase ?? 'ORIGINAL',
+    }
+  })
 
   // Font loading — try Google Fonts for each unique family
   const families = [...new Set(priceElements.map((el) => el.fontFamily))]
@@ -1579,7 +1601,6 @@ function buildPriceHtml(
 
   const baseHead = `<meta charset="utf-8">
 ${fontLinks}
-<script>document.fonts.ready.then(function(){window.__fontsReady=true;});</script>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
   body{width:${width}px;height:${height}px;overflow:hidden}
@@ -1648,18 +1669,22 @@ ${fontLinks}
   // frameMaskStyle on the canvas element handles background-swap masking in canvas mode
   const canvasStyle = `position:absolute;inset:0;z-index:1;width:100%;height:100%;display:block;${frameMaskStyle}`
 
+  const priceTextDataJson = JSON.stringify(priceTextDataPx)
+  const newPriceJson      = JSON.stringify(newPrice)
+
   return `<!DOCTYPE html>
 <html><head>${baseHead}
 </head><body>
 <div class="frame">
   ${bgLayer}
   <canvas id="c" style="${canvasStyle}" width="${width}" height="${height}" ${bgSrcAttr}></canvas>
-  ${overlays}
 </div>
 <script>
 (function(){
 var W=${width},H=${height};
 var priceRects=${priceRectsJson};
+var priceTextData=${priceTextDataJson};
+var newPriceStr=${newPriceJson};
 var bgPx=${bgPxJson};
 var cv=document.getElementById('c');
 var ctx=cv.getContext('2d');
@@ -1667,7 +1692,7 @@ var ctx=cv.getContext('2d');
 var PAD=${PRICE_MASK_PAD};
 function eraseRects(bgImgEl){
   priceRects.forEach(function(r){
-    var ex=r.tx,ey=r.ty,ew=r.tw,eh=r.th; // text-ink erase area
+    var ex=r.tx,ey=r.ty,ew=r.tw,eh=r.th;
 
     // ── B1: background-layer export (most accurate for image backgrounds) ─────
     if(bgImgEl&&bgPx&&bgPx.w>0&&bgPx.h>0){
@@ -1743,20 +1768,67 @@ function eraseRects(bgImgEl){
     }
     ctx.restore();
   });
-  document.fonts.ready.then(function(){window.__ready=true;});
 }
 
+// ── Draw new price text directly on canvas ────────────────────────────────
+// Uses absolute pixel coordinates → same position as the Figma text node.
+// textBaseline:'middle' anchors at the vertical midpoint of the node bounds,
+// which is independent of font-metric leading differences (unlike CSS divs).
+function applyCase(t,tc){
+  if(tc==='UPPER') return t.toUpperCase();
+  if(tc==='LOWER') return t.toLowerCase();
+  if(tc==='TITLE') return t.replace(/\\b\\w/g,function(c){return c.toUpperCase();});
+  return t;
+}
+function drawText(){
+  priceTextData.forEach(function(t){
+    var txt=applyCase(newPriceStr,t.textCase);
+    ctx.save();
+    ctx.font=(t.italic?'italic ':'')+t.fontWeight+' '+t.fontSize+'px \''+t.fontFamily+'\',Arial,sans-serif';
+    ctx.fillStyle=t.color;
+    ctx.textBaseline='middle';
+    var anchorX=t.x;
+    if(t.align==='center') anchorX=t.x+Math.round(t.w/2);
+    else if(t.align==='right') anchorX=t.x+t.w;
+    ctx.textAlign=t.align;
+    var drawY=t.midY;
+    if(Math.abs(t.letterSpacing)>0.5){
+      var chars=txt.split('');
+      var tw2=0;
+      for(var i=0;i<chars.length;i++) tw2+=ctx.measureText(chars[i]).width+t.letterSpacing;
+      var cx2=(t.align==='center')?anchorX-tw2/2:(t.align==='right')?anchorX-tw2:anchorX;
+      ctx.textAlign='left';
+      for(var i=0;i<chars.length;i++){
+        ctx.fillText(chars[i],cx2,drawY);
+        cx2+=ctx.measureText(chars[i]).width+t.letterSpacing;
+      }
+    } else {
+      ctx.fillText(txt,anchorX,drawY);
+    }
+    ctx.restore();
+  });
+}
+
+// ── Orchestrate: draw frame → erase old text → draw new text ─────────────
 var frameImg=new Image();
 frameImg.onload=function(){
   ctx.drawImage(frameImg,0,0,W,H);
+  function proceed(bgEl){
+    eraseRects(bgEl);
+    // Wait for webfonts before drawing text so the right typeface is used.
+    document.fonts.ready.then(function(){
+      drawText();
+      window.__ready=true;
+    });
+  }
   var bgsrc=cv.getAttribute('data-bgsrc');
   if(bgsrc){
     var bgImgEl=new Image();
-    bgImgEl.onload=function(){eraseRects(bgImgEl);};
-    bgImgEl.onerror=function(){eraseRects(null);};
+    bgImgEl.onload=function(){proceed(bgImgEl);};
+    bgImgEl.onerror=function(){proceed(null);};
     bgImgEl.src=bgsrc;
   } else {
-    eraseRects(null);
+    proceed(null);
   }
 };
 frameImg.src='${frameBase64}';
