@@ -151,8 +151,18 @@ export function parseFigmaUrl(url: string): string | null {
 // Fallback: TEXT content matching price number patterns.
 
 const PRICE_LAYER_NAMES = new Set([
-  'precio', 'price', 'valor', 'tarifa', 'costo', 'monto',
+  // Spanish
+  'precio', 'valor', 'tarifa', 'costo', 'monto', 'importe',
   'precio base', 'precio final', 'precio desde', 'desde precio',
+  'cuota', 'cuota mensual', 'cuotas', 'mensualidad',
+  // English
+  'price', 'amount', 'value', 'cost', 'fee', 'rate', 'total',
+  'monthly', 'plan price', 'subscription', 'plan cost',
+  // Portuguese
+  'preço', 'valor', 'mensalidade',
+  // Generic / design convention
+  'key value', 'featured value', 'main value', 'hero value',
+  'number', 'numero', 'figure',
 ])
 
 function isPriceLayerName(name: string, configuredName = 'precio'): boolean {
@@ -182,16 +192,27 @@ function findBackgroundNode(
 }
 
 const PRICE_PATTERNS = [
-  /^\$[\d.,]+/,                      // $450.000.000
-  /^[\d.,]+\s*(?:millones?|M)\b/i,   // 450 millones / 450M
-  /^\d[\d.,]*\s*SMMLV\b/i,           // 235 SMMLV
-  /desde\s*\$[\d.,]+/i,              // Desde $450.000.000
-  /^[\d.,]+\s*(?:mil|K)\b/i,         // 450 mil
+  // Any currency symbol prefix  ($, €, £, ¥, ₹, ₽, ₩, ₿, etc.)
+  /^[$€£¥₹₽₩₪₿₴₦₫฿₵₡₢₤₧₨₭₮₰₱₲₳₸₺₼₾]\s*[\d.,]+/,
+  // Number + ISO currency code or crypto ticker
+  /^[\d.,]+\s*(?:USD|EUR|GBP|CAD|AUD|CHF|JPY|CNY|BRL|COP|MXN|ARS|CLP|PEN|CRC|HNL|GTQ|PAB|DOP|BOB|UYU|VES|BTC|ETH|USDT|BNB|SOL|XRP|USDC|DAI|ADA|DOGE|AVAX|MATIC)\b/i,
+  // Currency code + number
+  /^(?:USD|EUR|GBP|CAD|AUD|BTC|ETH|USDT)\s*[\d.,]+/i,
+  // Spanish real-estate / LATAM
+  /^[\d.,]+\s*(?:millones?|M)\b/i,
+  /^\d[\d.,]*\s*SMMLV\b/i,
+  /^[\d.,]+\s*(?:mil|K)\b/i,
+  /desde\s*[$€£¥]?[\d.,]+/i,
+  // "desde / from / à partir" prefix patterns
+  /^(?:from|desde|dès|ab|da|van)\s+[$€£¥₹]?[\d.,]+/i,
+  // Large formatted number (e.g. 1,200,000 or 1.200.000 or 600,555,0000)
+  // Must have at least one separator group and be 6+ total chars to avoid short codes.
+  /^\d{1,3}(?:[.,]\d{3,4})+$/,
 ]
 
 function looksLikePrice(text: string): boolean {
   const t = text.trim()
-  if (t.length === 0 || t.length > 60) return false
+  if (t.length === 0 || t.length > 80) return false
   return PRICE_PATTERNS.some((p) => p.test(t))
 }
 
@@ -217,6 +238,17 @@ function makeContainer(node: FigmaNode): PriceContainer | undefined {
     opacity: node.opacity,
     blendMode: node.blendMode,
   }
+}
+
+// Returns true only if the node's bounding box covers less than 60 % of the
+// frame area — rules out full-frame background rectangles that should never
+// be used as a price-specific container fill.
+function isSizedForPriceContainer(node: FigmaNode, frameBounds: FigmaBounds): boolean {
+  const rb = node.absoluteBoundingBox
+  if (!rb) return true
+  const frameArea = frameBounds.width * frameBounds.height
+  if (frameArea <= 0) return true
+  return (rb.width * rb.height) / frameArea < 0.6
 }
 
 // Walks the entire node tree searching for TEXT nodes whose layer name matches
@@ -255,13 +287,25 @@ function walkForPriceNodes(
 
   // Recurse into children, passing the best container found at this level.
   if (node.children) {
-    // Prefer a RECTANGLE/VECTOR child with a solid fill (direct background rect)
+    // Prefer a RECTANGLE/VECTOR sibling that is small enough to be a dedicated
+    // price background (not a full-frame background rect).
     const bgRect = node.children.find(
-      (c) => (c.type === 'RECTANGLE' || c.type === 'VECTOR') && solidFill(c)
+      (c) =>
+        (c.type === 'RECTANGLE' || c.type === 'VECTOR') &&
+        solidFill(c) &&
+        isSizedForPriceContainer(c, frameBounds),
     )
+
+    // FRAME/COMPONENT/INSTANCE fills are the creative's own background —
+    // never use them as the price container; inherit the previous one instead.
+    const isLayoutFrame =
+      node.type === 'FRAME' ||
+      node.type === 'COMPONENT' ||
+      node.type === 'INSTANCE'
+
     const childContainer = bgRect
       ? makeContainer(bgRect)
-      : (makeContainer(node) ?? nearestContainer)
+      : (isLayoutFrame ? nearestContainer : (makeContainer(node) ?? nearestContainer))
 
     for (const child of node.children) {
       results.push(...walkForPriceNodes(child, frameBounds, configuredPriceLayerName, childContainer))

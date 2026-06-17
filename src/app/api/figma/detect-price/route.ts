@@ -42,6 +42,13 @@ export interface PriceElement {
   containerCornerRadius?: number   // px
   containerOpacity?: number        // 0-1
   containerBlendMode?: string      // Figma blend mode, e.g. 'MULTIPLY'
+  // Background classification (from vision model) — drives erase strategy selection.
+  // solid       → paint containerColor / backgroundColorHex over text area
+  // image       → crop pixels from background image (never paint solid color)
+  // gradient    → sample adjacent pixels; never paint solid color
+  // transparent → no distinct background; overlay text directly
+  backgroundType?: 'solid' | 'image' | 'gradient' | 'transparent'
+  backgroundColorHex?: string | null  // #RRGGBB when backgroundType === 'solid'; else null
   // Typography fidelity — all sourced from Figma node.style
   italic: boolean
   letterSpacing: number      // px (Figma absolute pixel value)
@@ -53,115 +60,160 @@ export interface PriceElement {
 
 // ─── Prompt ───────────────────────────────────────────────────────────────────
 
-const DETECT_PROMPT = `CONTEXT:
-The output will be used to place replacement price overlays on top of the original creative at exact pixel coordinates. Bounding box precision is critical because small positioning errors can cause visible misalignment.
+const DETECT_PROMPT = `CONTEXT — HOW THIS OUTPUT IS USED:
+Each bounding box drives TWO rendering steps:
+  STEP 1 — ERASE: the old price text is masked (painted over) at the exact bounding box position.
+  STEP 2 — RENDER: the new price text is placed at that exact position with the same typography.
+
+Errors in bounding box precision or backgroundType cause visible defects:
+  • Box too large  → erases adjacent design elements (logos, decorations).
+  • Box too small  → old text pixels peek out around the new text.
+  • backgroundType wrong → wrong fill strategy (e.g. solid black rect over a photo background).
+
+YOU ARE: a precision layout-analysis model for marketing creatives.
 
 TASK:
-Detect every text element in the image that represents a monetary value, price, payable amount, installment amount, financing amount, rent, fee, rate with currency, or any other market-facing financial figure.
+Find every KEY CHANGEABLE VALUE in the image — any prominent number, price, amount, or figure that a marketing team would update between creative versions.
+Works for ANY industry (real estate, fintech, crypto, SaaS, insurance, retail, travel, …) and ANY language or currency.
 
-The creative may be in any language, currency, script, country, industry, or layout.
+OUTPUT — RAW JSON ARRAY ONLY. No markdown, no code fences, no comments, no text before or after:
 
-OUTPUT FORMAT:
-Return ONLY a raw JSON array.
-Do NOT return markdown.
-Do NOT return code fences.
-Do NOT return explanations.
-Do NOT return any text before or after the JSON.
-
-Return an array of objects using this exact field structure:
 [
   {
-    "id": "<sequential_identifier>",
-    "text": "<exact_text_as_rendered>",
-    "topPct": <float_with_2_decimals>,
-    "leftPct": <float_with_2_decimals>,
-    "widthPct": <float_with_2_decimals>,
-    "heightPct": <float_with_2_decimals>,
+    "id": "p1",
+    "text": "<exact rendered string>",
+    "topPct": <float 2 dec>,
+    "leftPct": <float 2 dec>,
+    "widthPct": <float 2 dec>,
+    "heightPct": <float 2 dec>,
     "estimatedFontSizePx": <integer>,
     "isBold": <boolean>,
     "isItalic": <boolean>,
-    "colorHex": "<hex_color>",
-    "confidence": "<high_or_medium>"
+    "colorHex": "<#RRGGBB>",
+    "backgroundType": "<solid | image | gradient | transparent>",
+    "backgroundColorHex": "<#RRGGBB | null>",
+    "confidence": "<high | medium>"
   }
 ]
 
-BOUNDING BOX RULES:
-- topPct and heightPct must be measured relative to the full image height.
-- leftPct and widthPct must be measured relative to the full image width.
-- The bounding box must be the tightest possible rectangle enclosing the actual visible glyphs.
-- Do NOT add padding.
-- Do NOT measure the container, background shape, paragraph box, line-height box, or safe area.
-- Measure only the actual rendered text ink boundary.
-- If a single financial expression is split across multiple lines but visually belongs together, return it as one element with one bounding box.
-- If separate financial expressions are visually independent, return them as separate elements.
-- All percentage coordinates and dimensions must be numeric floats with exactly 2 decimal places.
+═══════════════════════════════════════════
+BOUNDING BOX — PRECISION RULES (critical)
+═══════════════════════════════════════════
+The bounding box must enclose ONLY the visible ink pixels of the glyphs.
 
-TEXT RULES:
-- Copy the text exactly as rendered.
-- Preserve symbols, separators, spacing, casing, punctuation, abbreviations, and line breaks.
-- Do NOT normalize.
-- Do NOT translate.
-- Do NOT infer missing characters.
-- Do NOT reformat the text.
+  topPct    = (px from image top to topmost ascender pixel)  ÷ image height × 100
+  leftPct   = (px from image left to leftmost glyph pixel)   ÷ image width  × 100
+  widthPct  = (rightmost − leftmost glyph pixel)             ÷ image width  × 100
+  heightPct = (bottommost descender − topmost ascender)      ÷ image height × 100
 
-FIELD RULES:
-- id: assign sequential identifiers in reading order.
-- text: exact visible string of the detected financial text element.
-- estimatedFontSizePx: approximate visible capital-letter height, or equivalent dominant glyph height, at the image's native resolution.
-- isBold: true only if the text is visually heavier than nearby non-price body text.
-- isItalic: true only if the glyphs are visibly slanted.
-- colorHex: dominant glyph color only, in uppercase hexadecimal format using #RRGGBB.
-- confidence: use only "high" or "medium".
-- Omit any detection that would be considered low confidence.
+NEVER include in the bounding box:
+  • Container rectangle, card border, or background shape
+  • Padding between glyph and container edge
+  • Line-height gap above ascenders or below descenders
+  • Drop shadows, glows, or stroke outlines that extend beyond the glyph
+  • Safe-area margins, gutters, or any whitespace not part of the text
 
-INCLUDE:
-Detect any text element that functions as a monetary or financial amount, including but not limited to:
-- full prices
-- shorthand price notation
-- qualified prices
-- price ranges
-- per-unit prices
-- installment or financing amounts
-- rent or lease amounts
-- down payments
-- booking or reservation amounts
-- commercial figures expressed through local financial reference units
-- any numeric expression that clearly functions as a price or payable market-facing amount in context
+Multi-line amount that is ONE logical value → ONE bounding box enclosing all lines.
+Two amounts at different positions → TWO separate objects.
+All numeric fields: exactly 2 decimal places.
 
-EXCLUDE:
-Do NOT return:
-- brand names
-- project names
-- headlines or slogans that are not prices
-- generic body copy
-- disclaimers
-- addresses
-- postal codes
-- phone numbers
-- dates
-- times
-- unit numbers
-- floor numbers
-- reference codes
-- product codes
-- dimensions or area figures without financial meaning
-- standalone percentages that are not payable amounts
-- non-financial quantities, counts, or measurements
+═══════════════════════════════════════
+FIELD DEFINITIONS
+═══════════════════════════════════════
+id
+  Sequential reading-order label: "p1", "p2", …
 
-DISAMBIGUATION:
-Only return a text element if it functions as a monetary, payable, commercial, or financial figure in context.
-A number by itself is not sufficient unless its role as a financial amount is visually or semantically clear.
+text
+  Exact visible string, character-for-character.
+  Preserve: currency symbols, separators (. , ' space), casing, line breaks (\\n), abbreviations.
+  Do NOT reformat, normalise, translate, or infer missing characters.
 
-DEDUPLICATION:
-- Do NOT duplicate the same visible text element.
-- Do NOT split one grouped price into multiple objects unless the design clearly separates them.
-- If the same financial value appears in different locations, return each visible instance separately.
+estimatedFontSizePx
+  Visible cap-height in px at native image resolution.
+  For multi-size text elements: use the dominant (largest) size.
 
-ORDER:
-Return results in reading order: top-to-bottom, then left-to-right.
+isBold
+  true when the stroke weight is visually heavier than nearby body text.
 
-EMPTY RESULT:
-If no monetary or financial text is found, return an empty JSON array.`
+isItalic
+  true when glyphs are visibly slanted.
+
+colorHex
+  The GLYPH color — NOT the background color. Uppercase #RRGGBB.
+
+backgroundType  ← CRITICAL for correct rendering
+  Describes the visual surface DIRECTLY behind the text characters.
+  Choose the best match from these four options:
+
+    "solid"        A flat, single uniform-color rectangle or frame fill with no texture.
+                   Example: white card, navy blue box, solid black banner.
+
+    "image"        A photograph, illustration, or raster image tile.
+                   Example: product photo, lifestyle photography, textured background.
+
+    "gradient"     A smooth color transition (linear, radial, angular, or mesh gradient).
+                   Example: blue-to-purple gradient, sunset fade.
+
+    "transparent"  No distinct background layer — text floats over a complex layered scene
+                   with no single dominant fill directly behind the glyphs.
+
+  When in doubt between "image" and "transparent", choose "image".
+  This field determines whether the renderer uses solid fill or pixel-sampling to erase the old text.
+
+backgroundColorHex
+  ONLY when backgroundType is "solid": the exact hex color of the background surface (#RRGGBB).
+  For "image", "gradient", or "transparent": return null.
+
+confidence
+  "high" = unambiguously a featured value.
+  "medium" = plausible but uncertain.
+  Omit anything you would rate low-confidence.
+
+═══════════════════════════════════════
+WHAT TO DETECT ✓
+═══════════════════════════════════════
+Include when present:
+  • Prices and monetary amounts — any symbol or ISO code
+    ($, €, £, ¥, ₹, ₿, USD, EUR, GBP, COP, MXN, BRL, BTC, ETH, USDT, BNB, SOL, …)
+  • Plan costs, subscription fees, monthly/annual pricing, installments
+  • Crypto amounts, exchange rates, featured wallet balances
+  • Down payments, lease amounts, financing rates, booking fees, entry fees
+  • "From / Desde / À partir de / Ab / Da" + amount combinations
+  • Financial percentage rates (APR, APY, ROI, "50 % OFF", "12 % anual", yield %)
+  • Large formatted numbers that are the creative's hero commercial figure
+    ("600,555,0000" · "1.200.000" · "2,500 USDT" · "$4.99/mo" · "€ 1.299")
+  • Phone-like numbers ONLY when they are the LARGEST, most visually dominant element (hero position)
+
+═══════════════════════════════════════
+WHAT TO EXCLUDE ✗
+═══════════════════════════════════════
+Never return:
+  • Brand names, logos, taglines, marketing slogans
+  • Descriptive headlines without a numeric value
+  • Dates, times, durations ("June 2025", "9:00 AM", "30 days")
+  • Physical dimensions, floor counts, bedroom/room/unit numbers
+  • Product codes, reference numbers, postal codes, addresses
+  • Disclaimer or fine-print text (small font, legal/compliance section)
+  • Contact phone numbers in a footer/header "call us" context (not hero-sized)
+  • Counts with no commercial meaning ("3 bedrooms", "5 km", "10 cities")
+  • Decorative percentages with no financial function
+
+═══════════════════════════════════════
+DISAMBIGUATION
+═══════════════════════════════════════
+When a number's role is ambiguous (price vs. phone vs. code vs. reference):
+  Include if: it is the largest or most visually dominant numeric element,
+              OR surrounding copy implies a commercial amount
+              ("price", "plan", "from", "BTC", "monthly", "fee", "only", "just").
+  Exclude if: it is small, peripheral, or surrounded by contact/legal copy.
+
+═══════════════════════════════════════
+DEDUPLICATION · ORDER · EMPTY RESULT
+═══════════════════════════════════════
+Same text, two positions → two separate objects (one per position).
+Same text, same position → one object only.
+Order: top-to-bottom, then left-to-right within a row.
+Empty: return [] if nothing qualifies.`
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
@@ -247,6 +299,7 @@ export async function POST(req: NextRequest) {
         widthPct?: number; heightPct?: number
         estimatedFontSizePx: number; isBold: boolean; isItalic?: boolean
         colorHex: string; confidence: string
+        backgroundType?: string; backgroundColorHex?: string | null
       }>
 
       const existingTexts = new Set(results.map((r) => r.text.trim().toLowerCase()))
@@ -263,6 +316,9 @@ export async function POST(req: NextRequest) {
           ? Number(d.heightPct)
           : (fsPx / frameH) * 100 * 1.4
 
+        const bgType = (['solid', 'image', 'gradient', 'transparent'] as const)
+          .find((t) => t === d.backgroundType) ?? undefined
+
         results.push({
           id: `vision_${results.length}`,
           text: normalizedText,
@@ -274,6 +330,8 @@ export async function POST(req: NextRequest) {
           fontWeight: d.isBold ? 700 : 400,
           fontFamily: 'Inter',
           color: d.colorHex || '#FFFFFF',
+          backgroundType: bgType,
+          backgroundColorHex: bgType === 'solid' ? (d.backgroundColorHex ?? null) : null,
           italic: d.isItalic ?? false,
           letterSpacing: 0,
           lineHeightPx: null,

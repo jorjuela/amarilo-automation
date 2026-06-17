@@ -35,11 +35,14 @@ interface PriceElement {
   fontFamily: string
   color: string      // CSS rgba (text color)
   containerColor?: string  // CSS rgba — solid fill behind price area; used to erase old price
-  // Full container geometry — use for accurate erase rect (overrides text bounds + padding)
+  // Full container geometry — used ONLY by CSS Strategy A (exact Figma box repaint)
   containerBounds?: { top: number; left: number; widthPct: number; heightPct: number }
   containerCornerRadius?: number  // px
   containerOpacity?: number       // 0-1
   containerBlendMode?: string     // Figma blend mode, e.g. 'MULTIPLY'
+  // Background classification from vision model — controls erase fill strategy
+  backgroundType?: 'solid' | 'image' | 'gradient' | 'transparent'
+  backgroundColorHex?: string | null  // #RRGGBB when backgroundType === 'solid'; else null
   // Typography fidelity (all sourced from Figma node.style)
   italic: boolean
   letterSpacing: number      // px
@@ -1399,30 +1402,62 @@ function buildPriceHtml(
   backgroundBounds: { top: number; left: number; widthPct: number; heightPct: number } | null = null,
   backgroundImageBase64: string | null = null,
 ): string {
-  // Price element bounding boxes in px.
-  // Use container bounds (exact Figma geometry) when available; else text bounds + padding.
+  // Build per-element erase descriptors.
+  //
+  // Two coordinate sets per element:
+  //   x/y/w/h  — container bounds (used ONLY by CSS Strategy A for full-box repaint)
+  //   tx/ty/tw/th — TEXT bounds + padding (used by canvas erase in all strategies)
+  //
+  // Canvas strategies always erase the TEXT area only. The container box is already
+  // rendered in the frame PNG, so we never need to repaint the full container in canvas
+  // mode — doing so is what caused the solid black rectangles.
+  //
+  // Strategy selection per element (decided below in hasExactColors + canvas code):
+  //   A  (CSS)    containerColor + solid bg + small container → repaint full box via CSS div
+  //   B  (canvas) containerColor + solid bg → fill text area with container color
+  //   B1 (canvas) backgroundImageBase64 available → crop pixels from bg image at text position
+  //   C  (canvas) fallback → sample adjacent pixels, median fill over text area
   const priceRectsPx = priceElements.map((el) => {
+    // Text-ink erase area — always computed, used by canvas strategies
+    const tx = Math.max(0, Math.round(el.left     / 100 * width)  - PRICE_MASK_PAD)
+    const ty = Math.max(0, Math.round(el.top      / 100 * height) - PRICE_MASK_PAD)
+    const tw = Math.min(width,  Math.round(el.widthPct  / 100 * width)  + PRICE_MASK_PAD * 2)
+    const th = Math.min(height, Math.round(el.heightPct / 100 * height) + PRICE_MASK_PAD * 2)
+
+    // Resolve the best solid fill color: Figma structural color takes priority;
+    // vision backgroundColorHex is a reliable fallback when Figma tree walk missed it.
+    const solidFillColor = el.containerColor
+      ?? (el.backgroundType === 'solid' && el.backgroundColorHex ? el.backgroundColorHex : null)
+
+    // backgroundType — normalise: if Figma gave us a containerColor but no vision hint,
+    // treat it as solid (the Figma tree walk found a dedicated fill rect).
+    const bgType: string = el.backgroundType
+      ?? (solidFillColor ? 'solid' : 'unknown')
+
     if (el.containerBounds) {
       return {
+        // Container bounds — for CSS Strategy A only (full-box exact repaint)
         x: Math.max(0, Math.round(el.containerBounds.left     / 100 * width)),
         y: Math.max(0, Math.round(el.containerBounds.top      / 100 * height)),
         w: Math.min(width,  Math.round(el.containerBounds.widthPct  / 100 * width)),
         h: Math.min(height, Math.round(el.containerBounds.heightPct / 100 * height)),
-        containerColor: el.containerColor ?? null,
+        // Text bounds — for canvas erase
+        tx, ty, tw, th,
+        containerColor: solidFillColor,
         cornerRadius: el.containerCornerRadius ?? 0,
         opacity: el.containerOpacity ?? 1,
         blendMode: el.containerBlendMode ?? 'NORMAL',
+        backgroundType: bgType,
       }
     }
     return {
-      x: Math.max(0, Math.round(el.left   / 100 * width)  - PRICE_MASK_PAD),
-      y: Math.max(0, Math.round(el.top    / 100 * height) - PRICE_MASK_PAD),
-      w: Math.min(width,  Math.round(el.widthPct  / 100 * width)  + PRICE_MASK_PAD * 2),
-      h: Math.min(height, Math.round(el.heightPct / 100 * height) + PRICE_MASK_PAD * 2),
-      containerColor: el.containerColor ?? null,
+      x: tx, y: ty, w: tw, h: th,
+      tx, ty, tw, th,
+      containerColor: solidFillColor,
       cornerRadius: 0,
       opacity: 1,
       blendMode: 'NORMAL',
+      backgroundType: bgType,
     }
   })
 
@@ -1473,13 +1508,27 @@ ${fontLinks}
     frameMaskStyle = `mask-image:url("data:image/svg+xml,${svgMask}");mask-size:100% 100%;`
   }
 
-  // ── Strategy A: ALL elements have a solid containerColor → pure CSS, no canvas ──
-  // Fastest and most accurate for solid-fill price backgrounds (e.g. colored boxes).
-  const hasExactColors = priceElements.every((el) => !!el.containerColor)
+  // ── Strategy A: pure CSS solid-fill erase ────────────────────────────────────
+  // Used ONLY when every element meets ALL three conditions:
+  //   1. A solid fill color is known (containerColor or backgroundColorHex)
+  //   2. backgroundType is 'solid' (vision confirmed, or Figma structural fallback)
+  //   3. containerBounds < 12 % of frame area (dedicated price box, not the full creative bg)
+  // This is the fastest and highest-quality path for price-in-a-colored-box designs.
+  // All other cases fall through to canvas (Strategies B / B1 / C).
+  const hasExactColors = priceRectsPx.every((r) => {
+    if (!r.containerColor) return false
+    if (r.backgroundType === 'image' || r.backgroundType === 'gradient' || r.backgroundType === 'transparent') return false
+    // Only use full-box CSS repaint when the container is a small dedicated box
+    const el = priceElements[priceRectsPx.indexOf(r)]
+    if (el?.containerBounds) {
+      const areaPct = (el.containerBounds.widthPct / 100) * (el.containerBounds.heightPct / 100)
+      if (areaPct >= 0.12) return false
+    }
+    return true
+  })
 
   if (hasExactColors) {
-    const eraseRects = priceElements.map((el, i) => {
-      const r = priceRectsPx[i]
+    const eraseRects = priceRectsPx.map((r) => {
       let extra = ''
       if (r.cornerRadius > 0) extra += `border-radius:${r.cornerRadius}px;`
       if (r.opacity < 0.999) extra += `opacity:${r.opacity.toFixed(3)};`
@@ -1488,7 +1537,7 @@ ${fontLinks}
       }
       return `<div style="position:absolute;z-index:2;pointer-events:none;`
         + `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;`
-        + `background:${el.containerColor};${extra}"></div>`
+        + `background:${r.containerColor};${extra}"></div>`
     }).join('\n')
 
     return `<!DOCTYPE html>
@@ -1543,51 +1592,59 @@ var cv=document.getElementById('c');
 var ctx=cv.getContext('2d');
 
 var BLEND_MAP={'MULTIPLY':'multiply','SCREEN':'screen','OVERLAY':'overlay','DARKEN':'darken','LIGHTEN':'lighten','COLOR_DODGE':'color-dodge','COLOR_BURN':'color-burn','HARD_LIGHT':'hard-light','SOFT_LIGHT':'soft-light','DIFFERENCE':'difference','EXCLUSION':'exclusion','HUE':'hue','SATURATION':'saturation','COLOR':'color','LUMINOSITY':'luminosity'};
-function applyRoundRect(x,y,w,h,cr){
-  if(cr>0&&ctx.roundRect){ctx.beginPath();ctx.roundRect(x,y,w,h,cr);ctx.fill();}
-  else{ctx.fillRect(x,y,w,h);}
-}
 function eraseRects(bgImgEl){
   priceRects.forEach(function(r){
-    var cr=r.cornerRadius||0;
+    // tx/ty/tw/th = TEXT-INK bounds (tight erase area, no full container).
+    // The container box is already rendered in the frame PNG — we only need to
+    // cover the old glyph pixels. Sampling is done around this small area so
+    // the pixels adjacent to the text (inside the container) inform the fill color.
+    var ex=r.tx, ey=r.ty, ew=r.tw, eh=r.th;
     var op=r.opacity!=null?r.opacity:1;
     var bm=r.blendMode&&r.blendMode!=='NORMAL'?(BLEND_MAP[r.blendMode]||'source-over'):'source-over';
+    var bt=r.backgroundType||'unknown';
     ctx.save();
     ctx.globalAlpha=op;
     ctx.globalCompositeOperation=bm;
-    if(r.containerColor){
-      // Strategy B: exact solid fill from Figma tree (correct color, shape, opacity, blend)
+    var usedSolid=false;
+    if(r.containerColor && bt!=='image' && bt!=='gradient' && bt!=='transparent'){
+      // Strategy B: solid fill — paint the container color over TEXT AREA ONLY.
+      // The container box boundary is preserved as-is from the frame PNG.
       ctx.fillStyle=r.containerColor;
-      applyRoundRect(r.x,r.y,r.w,r.h,cr);
-    } else if(bgImgEl&&bgPx&&bgPx.w>0&&bgPx.h>0){
-      // Strategy B1: crop background image at price position (image bg)
-      ctx.restore();ctx.save();
-      var scaleX=bgImgEl.naturalWidth/bgPx.w;
-      var scaleY=bgImgEl.naturalHeight/bgPx.h;
-      var srcX=Math.max(0,(r.x-bgPx.x)*scaleX);
-      var srcY=Math.max(0,(r.y-bgPx.y)*scaleY);
-      var srcW=Math.min(bgImgEl.naturalWidth -srcX, r.w*scaleX);
-      var srcH=Math.min(bgImgEl.naturalHeight-srcY, r.h*scaleY);
-      if(srcW>0&&srcH>0){
-        if(cr>0&&ctx.roundRect){ctx.beginPath();ctx.roundRect(r.x,r.y,r.w,r.h,cr);ctx.clip();}
-        ctx.drawImage(bgImgEl,srcX,srcY,srcW,srcH,r.x,r.y,r.w,r.h);
-      }
-    } else {
-      // Strategy C: multi-edge median pixel sampling
-      ctx.restore();ctx.save();
-      var samples=[];
-      function addSamples(d){if(!d)return;for(var i=0;i<d.length;i+=4)samples.push([d[i],d[i+1],d[i+2]]);}
-      if(r.y>=8) addSamples(ctx.getImageData(r.x,Math.max(0,r.y-8),r.w,8).data);
-      if(r.y+r.h+8<H) addSamples(ctx.getImageData(r.x,r.y+r.h,r.w,8).data);
-      if(r.x>=8) addSamples(ctx.getImageData(Math.max(0,r.x-8),r.y,8,r.h).data);
-      if(samples.length>0){
-        samples.sort(function(a,b){return(a[0]+a[1]+a[2])-(b[0]+b[1]+b[2]);});
-        var m=samples[Math.floor(samples.length/2)];
-        ctx.fillStyle='rgb('+m[0]+','+m[1]+','+m[2]+')';
+      ctx.fillRect(ex,ey,ew,eh);
+      usedSolid=true;
+    }
+    if(!usedSolid){
+      if(bgImgEl&&bgPx&&bgPx.w>0&&bgPx.h>0){
+        // Strategy B1: crop pixels from the exported background image at text position.
+        ctx.restore();ctx.save();
+        var scaleX=bgImgEl.naturalWidth/bgPx.w;
+        var scaleY=bgImgEl.naturalHeight/bgPx.h;
+        var srcX=Math.max(0,(ex-bgPx.x)*scaleX);
+        var srcY=Math.max(0,(ey-bgPx.y)*scaleY);
+        var srcW=Math.min(bgImgEl.naturalWidth-srcX,ew*scaleX);
+        var srcH=Math.min(bgImgEl.naturalHeight-srcY,eh*scaleY);
+        if(srcW>0&&srcH>0){ctx.drawImage(bgImgEl,srcX,srcY,srcW,srcH,ex,ey,ew,eh);}
       } else {
-        ctx.fillStyle='rgba(0,0,0,0)';
+        // Strategy C: sample pixels from the 8 px band AROUND the text area.
+        // Because this band is inside the container box (the box is larger than the text),
+        // the samples pick up the container's own background color — which is exactly
+        // what we want to fill the erase area with.
+        ctx.restore();ctx.save();
+        var samples=[];
+        function addSamples(d){if(!d)return;for(var i=0;i<d.length;i+=4)samples.push([d[i],d[i+1],d[i+2]]);}
+        if(ey>=8)        addSamples(ctx.getImageData(ex,Math.max(0,ey-8),ew,8).data);
+        if(ey+eh+8<H)    addSamples(ctx.getImageData(ex,ey+eh,ew,8).data);
+        if(ex>=8)        addSamples(ctx.getImageData(Math.max(0,ex-8),ey,8,eh).data);
+        if(ex+ew+8<W)    addSamples(ctx.getImageData(ex+ew,ey,8,eh).data);
+        if(samples.length>0){
+          samples.sort(function(a,b){return(a[0]+a[1]+a[2])-(b[0]+b[1]+b[2]);});
+          var med=samples[Math.floor(samples.length/2)];
+          ctx.fillStyle='rgb('+med[0]+','+med[1]+','+med[2]+')';
+        } else {
+          ctx.fillStyle='rgba(0,0,0,0)';
+        }
+        ctx.fillRect(ex,ey,ew,eh);
       }
-      applyRoundRect(r.x,r.y,r.w,r.h,cr);
     }
     ctx.restore();
   });
