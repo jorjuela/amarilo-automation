@@ -1667,70 +1667,81 @@ var ctx=cv.getContext('2d');
 var PAD=${PRICE_MASK_PAD};
 function eraseRects(bgImgEl){
   priceRects.forEach(function(r){
-    // ex/ey/ew/eh = text-ink bounds (text glyphs + PAD px on each side).
-    // We erase ONLY this area — never the full container.
-    // The container box (if any) is already rendered in the frame PNG.
-    var ex=r.tx,ey=r.ty,ew=r.tw,eh=r.th;
+    var ex=r.tx,ey=r.ty,ew=r.tw,eh=r.th; // text-ink erase area
 
+    // ── B1: background-layer export (most accurate for image backgrounds) ─────
     if(bgImgEl&&bgPx&&bgPx.w>0&&bgPx.h>0){
-      // ── Strategy B1: crop pixels from the named background-layer export ─────
-      // Most accurate for image backgrounds: uses the exact source layer pixels.
       ctx.save();
-      var scaleX=bgImgEl.naturalWidth/bgPx.w;
-      var scaleY=bgImgEl.naturalHeight/bgPx.h;
-      var srcX=Math.max(0,(ex-bgPx.x)*scaleX);
-      var srcY=Math.max(0,(ey-bgPx.y)*scaleY);
-      var srcW=Math.min(bgImgEl.naturalWidth-srcX,ew*scaleX);
-      var srcH=Math.min(bgImgEl.naturalHeight-srcY,eh*scaleY);
-      if(srcW>0&&srcH>0){ctx.drawImage(bgImgEl,srcX,srcY,srcW,srcH,ex,ey,ew,eh);}
+      var sx=bgImgEl.naturalWidth/bgPx.w, sy=bgImgEl.naturalHeight/bgPx.h;
+      var srcX=Math.max(0,(ex-bgPx.x)*sx), srcY=Math.max(0,(ey-bgPx.y)*sy);
+      var srcW=Math.min(bgImgEl.naturalWidth-srcX,ew*sx);
+      var srcH=Math.min(bgImgEl.naturalHeight-srcY,eh*sy);
+      if(srcW>0&&srcH>0) ctx.drawImage(bgImgEl,srcX,srcY,srcW,srcH,ex,ey,ew,eh);
       ctx.restore();
-    } else {
-      // ── Strategy C: multi-zone pixel sampling from the rendered PNG ──────────
-      // Two complementary zones are sampled to cover both scenarios:
-      //
-      //   zone-out (8 px outside the erase rect):
-      //     - Captures surrounding context (image, gradient, outer background).
-      //     - Excellent for prices over photo backgrounds.
-      //
-      //   zone-in (PAD px margin INSIDE the erase rect, above and below glyphs):
-      //     - The erase rect already includes PAD px above the top ascender and
-      //       PAD px below the bottom descender (pure container fill, no glyphs).
-      //     - Captures the container box fill color when the price is inside a
-      //       solid-color box, without reading the text pixels themselves.
-      //
-      // Median of all samples → robust single fill color.
-      // Last resort (zero samples) → use Figma containerColor if available.
-      ctx.save();
-      var samples=[];
-      function addSamples(d){
-        if(!d)return;
-        for(var i=0;i<d.length;i+=4)samples.push([d[i],d[i+1],d[i+2]]);
-      }
-      // zone-out: 8 px band around the erase rect
-      if(ey>8)          addSamples(ctx.getImageData(ex,Math.max(0,ey-8),ew,8).data);
-      if(ey+eh+8<H)     addSamples(ctx.getImageData(ex,ey+eh,ew,8).data);
-      if(ex>8)          addSamples(ctx.getImageData(Math.max(0,ex-8),ey,8,eh).data);
-      if(ex+ew+8<W)     addSamples(ctx.getImageData(ex+ew,ey,8,eh).data);
-      // zone-in: PAD-height strips at top and bottom of the erase rect
-      // (above ascenders / below descenders — no glyph ink here)
-      var inH=Math.min(PAD,Math.floor(eh/4));
-      if(inH>0){
-        addSamples(ctx.getImageData(ex,ey,ew,inH).data);
-        addSamples(ctx.getImageData(ex,ey+eh-inH,ew,inH).data);
-      }
-      if(samples.length>0){
-        samples.sort(function(a,b){return(a[0]+a[1]+a[2])-(b[0]+b[1]+b[2]);});
-        var med=samples[Math.floor(samples.length/2)];
-        ctx.fillStyle='rgb('+med[0]+','+med[1]+','+med[2]+')';
-      } else if(r.containerColor){
-        // Zero samples (text at frame edge): last-resort — use Figma-derived color
-        ctx.fillStyle=r.containerColor;
-      } else {
-        ctx.fillStyle='rgba(0,0,0,0)'; // nothing to fill
-      }
-      ctx.fillRect(ex,ey,ew,eh);
-      ctx.restore();
+      return;
     }
+
+    // ── C: pixel sampling (3 priority zones) ─────────────────────────────────
+    ctx.save();
+    var samples=[];
+    // Only accept fully opaque pixels — transparent areas read as RGB(0,0,0)
+    // which would incorrectly pull the median toward black.
+    function addPx(d){
+      if(!d) return;
+      for(var i=0;i<d.length;i+=4){
+        if(d[i+3]<200) continue; // skip transparent / semi-transparent
+        samples.push([d[i],d[i+1],d[i+2]]);
+      }
+    }
+    function gd(x,y,w,h){
+      if(w<1||h<1||x<0||y<0||x+w>W||y+h>H) return null;
+      return ctx.getImageData(x,y,w,h).data;
+    }
+
+    // Zone 1 — container interior: the space between container bounds (r.x/y/w/h)
+    // and the erase rect (ex/ey/ew/eh). These strips are guaranteed clean fill
+    // pixels with NO text rendered on them. Most reliable source.
+    var cx=r.x,cy=r.y,cw=r.w,ch=r.h;
+    if(cw>0&&ch>0){
+      var topH=ey-cy;          if(topH>=1) addPx(gd(cx,cy,cw,topH));
+      var botH=cy+ch-(ey+eh);  if(botH>=1) addPx(gd(cx,ey+eh,cw,botH));
+      var lftW=ex-cx;          if(lftW>=1) addPx(gd(cx,ey,lftW,eh));
+      var rgtW=cx+cw-(ex+ew);  if(rgtW>=1) addPx(gd(ex+ew,ey,rgtW,eh));
+    }
+
+    // Zone 2 — inner margins of the erase rect (PAD rows at very top and bottom).
+    // The erase rect is already padded: ey = text_top - PAD, ey+eh = text_bottom + PAD.
+    // So the first/last PAD rows are above/below the actual glyphs — pure container fill.
+    // Only sample if Zone 1 did not produce enough reliable data.
+    if(samples.length<40){
+      var inH=Math.min(PAD,Math.floor(eh/5));
+      if(inH>=1){
+        addPx(gd(ex,ey,ew,inH));
+        addPx(gd(ex,ey+eh-inH,ew,inH));
+      }
+    }
+
+    // Zone 3 — outer band (8 px outside the erase rect).
+    // Useful when there is no container or when Zone 1+2 are insufficient.
+    // Added LAST so container-exterior context does not contaminate the median.
+    if(samples.length<40){
+      addPx(gd(ex,ey-8,ew,8));
+      addPx(gd(ex,ey+eh,ew,8));
+      addPx(gd(ex-8,ey,8,eh));
+      addPx(gd(ex+ew,ey,8,eh));
+    }
+
+    if(samples.length>0){
+      samples.sort(function(a,b){return(a[0]+a[1]+a[2])-(b[0]+b[1]+b[2]);});
+      var m=samples[Math.floor(samples.length/2)];
+      ctx.fillStyle='rgb('+m[0]+','+m[1]+','+m[2]+')';
+      ctx.fillRect(ex,ey,ew,eh);
+    } else if(r.containerColor){
+      // True last resort (text at canvas edge, 0 opaque pixels sampled).
+      ctx.fillStyle=r.containerColor;
+      ctx.fillRect(ex,ey,ew,eh);
+    }
+    ctx.restore();
   });
   document.fonts.ready.then(function(){window.__ready=true;});
 }

@@ -240,15 +240,24 @@ function makeContainer(node: FigmaNode): PriceContainer | undefined {
   }
 }
 
-// Returns true only if the node's bounding box covers less than 60 % of the
-// frame area — rules out full-frame background rectangles that should never
-// be used as a price-specific container fill.
+// Returns true only if the node is sized like a price container, not a background.
+// Rejects nodes that span almost the full frame width (likely a background strip)
+// or cover more than 25 % of the frame area (likely a section background).
 function isSizedForPriceContainer(node: FigmaNode, frameBounds: FigmaBounds): boolean {
   const rb = node.absoluteBoundingBox
   if (!rb) return true
   const frameArea = frameBounds.width * frameBounds.height
   if (frameArea <= 0) return true
-  return (rb.width * rb.height) / frameArea < 0.6
+  const areaRatio  = (rb.width * rb.height) / frameArea
+  const widthRatio = rb.width / frameBounds.width
+  const heightRatio = rb.height / frameBounds.height
+  // Exclude: covers >25 % of frame area
+  if (areaRatio >= 0.25) return false
+  // Exclude: spans ≥ 85 % of frame width (horizontal background strip)
+  if (widthRatio >= 0.85) return false
+  // Exclude: spans ≥ 85 % of frame height (vertical background strip)
+  if (heightRatio >= 0.85) return false
+  return true
 }
 
 // Walks the entire node tree searching for TEXT nodes whose layer name matches
