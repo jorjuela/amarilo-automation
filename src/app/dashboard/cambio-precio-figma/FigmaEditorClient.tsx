@@ -88,6 +88,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
   const [globalPrice, setGlobalPrice] = useState('')
   const [activeFrameId, setActiveFrameId] = useState<string | null>(null)
   const [processing, setProcessing] = useState(false)
+  const [renderMode, setRenderMode] = useState<'canvas' | 'ai'>('canvas')
 
   // ── Project / Campaign state ──────────────────────────────────────────────
   const [projects, setProjects] = useState<FigmaProject[]>([])
@@ -392,32 +393,60 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
 
     await Promise.all(
       targets.map(async (item) => {
-        if (!item.imageBase64 || item.priceElements.length === 0) return
+        if (!item.imageBase64) return
         try {
-          const { width, height, x: frameX, y: frameY } = item.frame.bounds
-          let backgroundBounds: { top: number; left: number; widthPct: number; heightPct: number } | null = null
-          if (item.frame.backgroundNode) {
-            const bg = item.frame.backgroundNode.bounds
-            backgroundBounds = {
-              top:      (bg.y - frameY) / height * 100,
-              left:     (bg.x - frameX) / width  * 100,
-              widthPct:  bg.width  / width  * 100,
-              heightPct: bg.height / height * 100,
+          let pngUrl: string
+
+          if (renderMode === 'ai') {
+            // ── Mode AI: send image to Gemini for direct editing ──────────────
+            const aiRes = await fetch('/api/figma/edit-image', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ imageBase64: item.imageBase64, newPrice: globalPrice }),
+            })
+            if (!aiRes.ok) {
+              const errData = await aiRes.json().catch(() => ({ error: 'AI edit failed' }))
+              throw new Error(errData.error || 'AI edit failed')
             }
+            const { editedImageBase64 } = await aiRes.json()
+            if (!editedImageBase64) throw new Error('No se recibió imagen editada')
+            const byteStr = atob(editedImageBase64.split(',')[1])
+            const mimeStr = editedImageBase64.match(/^data:(image\/\w+)/)?.[1] ?? 'image/png'
+            const ab = new ArrayBuffer(byteStr.length)
+            const ia = new Uint8Array(ab)
+            for (let i = 0; i < byteStr.length; i++) ia[i] = byteStr.charCodeAt(i)
+            const blob = new Blob([ab], { type: mimeStr })
+            pngUrl = URL.createObjectURL(blob)
+            results.push({ frameId: item.frame.id, frameName: item.frame.name, blob, pngUrl })
+          } else {
+            // ── Mode Canvas: HTML + Playwright ────────────────────────────────
+            if (item.priceElements.length === 0) return
+            const { width, height, x: frameX, y: frameY } = item.frame.bounds
+            let backgroundBounds: { top: number; left: number; widthPct: number; heightPct: number } | null = null
+            if (item.frame.backgroundNode) {
+              const bg = item.frame.backgroundNode.bounds
+              backgroundBounds = {
+                top:      (bg.y - frameY) / height * 100,
+                left:     (bg.x - frameX) / width  * 100,
+                widthPct:  bg.width  / width  * 100,
+                heightPct: bg.height / height * 100,
+              }
+            }
+            const html = buildPriceHtml(
+              item.imageBase64, item.priceElements, globalPrice,
+              width, height, item.newBackground, backgroundBounds, item.backgroundImageBase64,
+            )
+            const res = await fetch('/api/price-pieces/export', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ html, width, height, format: 'png' }),
+            })
+            if (!res.ok) throw new Error('Export failed')
+            const blob = await res.blob()
+            pngUrl = URL.createObjectURL(blob)
+            results.push({ frameId: item.frame.id, frameName: item.frame.name, blob, pngUrl })
           }
-          const html = buildPriceHtml(
-            item.imageBase64, item.priceElements, globalPrice,
-            width, height, item.newBackground, backgroundBounds, item.backgroundImageBase64,
-          )
-          const res = await fetch('/api/price-pieces/export', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ html, width, height, format: 'png' }),
-          })
-          if (!res.ok) throw new Error('Export failed')
-          const blob = await res.blob()
-          const pngUrl = URL.createObjectURL(blob)
-          results.push({ frameId: item.frame.id, frameName: item.frame.name, blob, pngUrl })
+
           setFrames((prev) =>
             prev.map((f) => f.frame.id === item.frame.id
               ? { ...f, newPrice: globalPrice, status: 'done', exportedPng: pngUrl } : f)
@@ -512,13 +541,61 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
     }
   }
 
+  // ── Render one frame with AI image editing ───────────────────────────────
+
+  async function renderFrameWithAI(frameId: string): Promise<void> {
+    const item = frames.find((f) => f.frame.id === frameId)
+    if (!item?.imageBase64 || !item.newPrice.trim()) return
+
+    setFrames((prev) => prev.map((f) => f.frame.id === frameId ? { ...f, status: 'rendering' } : f))
+
+    try {
+      const res = await fetch('/api/figma/edit-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: item.imageBase64,
+          newPrice: item.newPrice,
+        }),
+      })
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: 'AI edit failed' }))
+        throw new Error(errData.error || 'AI edit failed')
+      }
+
+      const { editedImageBase64 } = await res.json()
+      if (!editedImageBase64) throw new Error('No se recibió imagen editada')
+
+      // Convert base64 data URL → blob → object URL
+      const byteStr = atob(editedImageBase64.split(',')[1])
+      const mimeStr = editedImageBase64.match(/^data:(image\/\w+)/)?.[1] ?? 'image/png'
+      const ab = new ArrayBuffer(byteStr.length)
+      const ia = new Uint8Array(ab)
+      for (let i = 0; i < byteStr.length; i++) ia[i] = byteStr.charCodeAt(i)
+      const blob = new Blob([ab], { type: mimeStr })
+      const pngUrl = URL.createObjectURL(blob)
+
+      setFrames((prev) =>
+        prev.map((f) => f.frame.id === frameId ? { ...f, status: 'done', exportedPng: pngUrl } : f)
+      )
+    } catch (err) {
+      setFrames((prev) =>
+        prev.map((f) => f.frame.id === frameId ? { ...f, status: 'error', error: String(err) } : f)
+      )
+    }
+  }
+
   // ── Batch render ──────────────────────────────────────────────────────────
 
   async function renderAllSelected() {
     const toRender = frames.filter(
       (f) => f.selected && f.status === 'ready' && f.newPrice.trim() && f.priceElements.length > 0
     )
-    for (const f of toRender) await renderFrame(f.frame.id)
+    for (const f of toRender) {
+      if (renderMode === 'ai') await renderFrameWithAI(f.frame.id)
+      else await renderFrame(f.frame.id)
+    }
   }
 
   // ── Download ZIP ──────────────────────────────────────────────────────────
@@ -694,6 +771,38 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
           <div className="flex-1 space-y-3">
             {(readyCount > 0 || doneCount > 0 || renderingCount > 0) && (
               <div className="card p-4 space-y-3">
+                {/* Render mode toggle */}
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-semibold text-gray-600">Modo:</span>
+                  <div className="flex rounded-lg border border-gray-200 overflow-hidden text-xs font-medium">
+                    <button
+                      onClick={() => setRenderMode('canvas')}
+                      className={`px-3 py-1.5 transition-colors ${
+                        renderMode === 'canvas'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-white text-gray-600 hover:bg-gray-50'
+                      }`}
+                    >
+                      Canvas
+                    </button>
+                    <button
+                      onClick={() => setRenderMode('ai')}
+                      className={`px-3 py-1.5 transition-colors border-l border-gray-200 ${
+                        renderMode === 'ai'
+                          ? 'bg-violet-600 text-white'
+                          : 'bg-white text-gray-600 hover:bg-gray-50'
+                      }`}
+                    >
+                      IA (Gemini)
+                    </button>
+                  </div>
+                  <span className="text-[11px] text-gray-400">
+                    {renderMode === 'ai'
+                      ? 'Edición directa de imagen con IA'
+                      : 'Precisión tipográfica con canvas'}
+                  </span>
+                </div>
+
                 {/* Batch price input */}
                 <div>
                   <label className="block text-xs font-semibold text-gray-700 mb-1">
@@ -712,7 +821,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
                       onClick={applyAndRenderAll}
                       disabled={!globalPrice.trim() || batchTargets === 0 || renderingCount > 0}
                       className="px-5 py-2 text-white rounded-lg text-sm font-semibold hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
-                      style={{ background: 'var(--amarilo-navy)' }}
+                      style={{ background: renderMode === 'ai' ? '#7c3aed' : 'var(--amarilo-navy)' }}
                     >
                       {renderingCount > 0
                         ? `Generando ${renderingCount}...`
@@ -750,7 +859,11 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
                     prev.map((f) => f.frame.id === activeFrame.frame.id ? { ...f, newPrice: price } : f)
                   )
                 }
-                onRender={() => renderFrame(activeFrame.frame.id)}
+                onRender={() =>
+                  renderMode === 'ai'
+                    ? renderFrameWithAI(activeFrame.frame.id)
+                    : renderFrame(activeFrame.frame.id)
+                }
                 onBackgroundChange={(bg) =>
                   setFrames((prev) =>
                     prev.map((f) => f.frame.id === activeFrame.frame.id ? { ...f, newBackground: bg } : f)
