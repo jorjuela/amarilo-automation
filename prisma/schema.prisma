@@ -189,6 +189,32 @@ model FigmaFileCache {
   @@map("figma_file_cache")
 }
 
+model PriceFeedback {
+  id            String   @id @default(cuid())
+  createdAt     DateTime @default(now())
+
+  // Source
+  figmaUrl      String
+  frameName     String
+  frameId       String
+
+  // Prices
+  originalPrice String   // detected price text
+  newPrice      String   // requested replacement
+
+  // Verdict
+  label         String   // 'correct' | 'error'
+  errorCategory String?  // 'background' | 'position' | 'detection' | 'font' | 'other'
+  description   String?
+
+  // Snapshot — stored so the case can be reviewed later without Figma access
+  generatedPng  String?  // base64 data URL (may be large; kept for eval use)
+  frameWidth    Int?
+  frameHeight   Int?
+
+  @@map("price_feedback")
+}
+
 // Stage values: EXPECTATIVA | LANZAMIENTO | SOSTENIMIENTO
 
 model User {

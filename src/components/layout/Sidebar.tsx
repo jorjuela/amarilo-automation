@@ -11,6 +11,7 @@ const navItems = [
   { href: '/dashboard/traffic', label: 'Tráfico Interno', icon: '📋' },
   { href: '/dashboard/cambio-precio',             label: 'Cambio de Precio',    icon: '🎨' },
   { href: '/dashboard/cambio-precio-figma',       label: 'Precios Figma (IA)',   icon: '🔗' },
+  { href: '/dashboard/figma-feedback',            label: 'Feedback Precios',     icon: '📊' },
   { href: '/dashboard/figma-html',               label: 'Precios Figma (HTML)', icon: '🏗️' },
   { href: '/dashboard/editar-imagen-html-imagen', label: 'Editor IMG→HTML→IMG', icon: '✏️' },
   { href: '/dashboard/jira', label: 'Estructura Jira', icon: '⚡' },

@@ -854,6 +854,7 @@ export default function FigmaEditorClient({ hasFigmaToken }: { hasFigmaToken: bo
             {activeFrame ? (
               <FrameDetail
                 item={activeFrame}
+                figmaUrl={fileUrl}
                 onPriceChange={(price) =>
                   setFrames((prev) =>
                     prev.map((f) => f.frame.id === activeFrame.frame.id ? { ...f, newPrice: price } : f)
@@ -1129,15 +1130,62 @@ function FrameCard({
 // ─── FrameDetail ──────────────────────────────────────────────────────────────
 
 function FrameDetail({
-  item, onPriceChange, onRender, onBackgroundChange,
+  item, figmaUrl, onPriceChange, onRender, onBackgroundChange,
 }: {
   item: FrameItem
+  figmaUrl: string
   onPriceChange: (p: string) => void
   onRender: () => void
   onBackgroundChange: (b: string | null) => void
 }) {
   const hasBgNode = !!item.frame.backgroundNode
   const isProcessing = item.status === 'exporting' || item.status === 'detecting' || item.status === 'rendering'
+
+  // ── Feedback state ────────────────────────────────────────────────────────
+  const [feedbackSaved, setFeedbackSaved] = useState(false)
+  const [feedbackLabel, setFeedbackLabel] = useState<'correct' | 'error' | null>(null)
+  const [showErrorForm, setShowErrorForm] = useState(false)
+  const [errorCategory, setErrorCategory] = useState('')
+  const [feedbackDesc, setFeedbackDesc] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  // Reset feedback when the frame changes (item.frame.id changes)
+  const [lastFrameId, setLastFrameId] = useState(item.frame.id)
+  if (item.frame.id !== lastFrameId) {
+    setFeedbackSaved(false)
+    setFeedbackLabel(null)
+    setShowErrorForm(false)
+    setErrorCategory('')
+    setFeedbackDesc('')
+    setLastFrameId(item.frame.id)
+  }
+
+  async function submitFeedback(label: 'correct' | 'error') {
+    setSubmitting(true)
+    try {
+      await fetch('/api/figma/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          figmaUrl,
+          frameName: item.frame.name,
+          frameId: item.frame.id,
+          originalPrice: item.priceElements[0]?.text ?? '',
+          newPrice: item.newPrice,
+          label,
+          errorCategory: label === 'error' ? (errorCategory || undefined) : undefined,
+          description: feedbackDesc.trim() || undefined,
+          frameWidth: Math.round(item.frame.bounds.width),
+          frameHeight: Math.round(item.frame.bounds.height),
+        }),
+      })
+      setFeedbackLabel(label)
+      setFeedbackSaved(true)
+      setShowErrorForm(false)
+    } catch { /* non-fatal */ } finally {
+      setSubmitting(false)
+    }
+  }
 
   function handleBgUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -1182,6 +1230,81 @@ function FrameDetail({
               >
                 Descargar PNG
               </a>
+
+              {/* ── Feedback ──────────────────────────────────────── */}
+              <div className="mt-3 pt-3 border-t border-gray-100">
+                {feedbackSaved ? (
+                  <div className="text-center space-y-1">
+                    <p className="text-xs font-semibold text-emerald-700">
+                      {feedbackLabel === 'correct' ? '👍 Marcado como correcto' : '👎 Error registrado'}
+                    </p>
+                    <button
+                      onClick={() => { setFeedbackSaved(false); setFeedbackLabel(null) }}
+                      className="text-[11px] text-gray-400 hover:underline"
+                    >
+                      Cambiar
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="text-[11px] text-gray-500 text-center">¿El resultado es correcto?</p>
+                    <div className="flex gap-2 justify-center">
+                      <button
+                        onClick={() => { setShowErrorForm(false); submitFeedback('correct') }}
+                        disabled={submitting}
+                        className="flex-1 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 text-xs font-semibold hover:bg-emerald-100 disabled:opacity-50 transition-colors"
+                      >
+                        👍 Correcto
+                      </button>
+                      <button
+                        onClick={() => setShowErrorForm(true)}
+                        disabled={submitting}
+                        className="flex-1 py-1.5 rounded-lg border border-red-200 bg-red-50 text-red-600 text-xs font-semibold hover:bg-red-100 disabled:opacity-50 transition-colors"
+                      >
+                        👎 Con errores
+                      </button>
+                    </div>
+                    {showErrorForm && (
+                      <div className="space-y-2 pt-1">
+                        <select
+                          value={errorCategory}
+                          onChange={(e) => setErrorCategory(e.target.value)}
+                          className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-red-400 bg-white"
+                        >
+                          <option value="">— Tipo de error (opcional) —</option>
+                          <option value="background">Fondo de color visible</option>
+                          <option value="position">Posición incorrecta</option>
+                          <option value="detection">Precio no detectado</option>
+                          <option value="font">Fuente o estilo incorrecto</option>
+                          <option value="other">Otro</option>
+                        </select>
+                        <textarea
+                          value={feedbackDesc}
+                          onChange={(e) => setFeedbackDesc(e.target.value)}
+                          placeholder="Descripción del problema (opcional)..."
+                          rows={2}
+                          className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 resize-none focus:outline-none focus:border-red-400"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => submitFeedback('error')}
+                            disabled={submitting}
+                            className="flex-1 py-1.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50"
+                          >
+                            {submitting ? 'Guardando...' : 'Enviar'}
+                          </button>
+                          <button
+                            onClick={() => setShowErrorForm(false)}
+                            className="px-3 py-1.5 rounded-lg border border-gray-200 text-gray-500 text-xs hover:bg-gray-50"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           ) : item.imageBase64 ? (
             <div className="relative">
