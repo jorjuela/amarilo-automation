@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import type { DetectedFrame } from '@/lib/figma/client'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -1149,16 +1149,18 @@ function FrameDetail({
   const [feedbackDesc, setFeedbackDesc] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  // Reset feedback when the frame changes (item.frame.id changes)
-  const [lastFrameId, setLastFrameId] = useState(item.frame.id)
-  if (item.frame.id !== lastFrameId) {
-    setFeedbackSaved(false)
-    setFeedbackLabel(null)
-    setShowErrorForm(false)
-    setErrorCategory('')
-    setFeedbackDesc('')
-    setLastFrameId(item.frame.id)
-  }
+  // Reset feedback when the frame changes
+  const prevFrameIdRef = useRef(item.frame.id)
+  useEffect(() => {
+    if (item.frame.id !== prevFrameIdRef.current) {
+      prevFrameIdRef.current = item.frame.id
+      setFeedbackSaved(false)
+      setFeedbackLabel(null)
+      setShowErrorForm(false)
+      setErrorCategory('')
+      setFeedbackDesc('')
+    }
+  }, [item.frame.id])
 
   async function submitFeedback(label: 'correct' | 'error') {
     setSubmitting(true)
@@ -1230,81 +1232,6 @@ function FrameDetail({
               >
                 Descargar PNG
               </a>
-
-              {/* ── Feedback ──────────────────────────────────────── */}
-              <div className="mt-3 pt-3 border-t border-gray-100">
-                {feedbackSaved ? (
-                  <div className="text-center space-y-1">
-                    <p className="text-xs font-semibold text-emerald-700">
-                      {feedbackLabel === 'correct' ? '👍 Marcado como correcto' : '👎 Error registrado'}
-                    </p>
-                    <button
-                      onClick={() => { setFeedbackSaved(false); setFeedbackLabel(null) }}
-                      className="text-[11px] text-gray-400 hover:underline"
-                    >
-                      Cambiar
-                    </button>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <p className="text-[11px] text-gray-500 text-center">¿El resultado es correcto?</p>
-                    <div className="flex gap-2 justify-center">
-                      <button
-                        onClick={() => { setShowErrorForm(false); submitFeedback('correct') }}
-                        disabled={submitting}
-                        className="flex-1 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 text-xs font-semibold hover:bg-emerald-100 disabled:opacity-50 transition-colors"
-                      >
-                        👍 Correcto
-                      </button>
-                      <button
-                        onClick={() => setShowErrorForm(true)}
-                        disabled={submitting}
-                        className="flex-1 py-1.5 rounded-lg border border-red-200 bg-red-50 text-red-600 text-xs font-semibold hover:bg-red-100 disabled:opacity-50 transition-colors"
-                      >
-                        👎 Con errores
-                      </button>
-                    </div>
-                    {showErrorForm && (
-                      <div className="space-y-2 pt-1">
-                        <select
-                          value={errorCategory}
-                          onChange={(e) => setErrorCategory(e.target.value)}
-                          className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-red-400 bg-white"
-                        >
-                          <option value="">— Tipo de error (opcional) —</option>
-                          <option value="background">Fondo de color visible</option>
-                          <option value="position">Posición incorrecta</option>
-                          <option value="detection">Precio no detectado</option>
-                          <option value="font">Fuente o estilo incorrecto</option>
-                          <option value="other">Otro</option>
-                        </select>
-                        <textarea
-                          value={feedbackDesc}
-                          onChange={(e) => setFeedbackDesc(e.target.value)}
-                          placeholder="Descripción del problema (opcional)..."
-                          rows={2}
-                          className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 resize-none focus:outline-none focus:border-red-400"
-                        />
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => submitFeedback('error')}
-                            disabled={submitting}
-                            className="flex-1 py-1.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50"
-                          >
-                            {submitting ? 'Guardando...' : 'Enviar'}
-                          </button>
-                          <button
-                            onClick={() => setShowErrorForm(false)}
-                            className="px-3 py-1.5 rounded-lg border border-gray-200 text-gray-500 text-xs hover:bg-gray-50"
-                          >
-                            Cancelar
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
             </div>
           ) : item.imageBase64 ? (
             <div className="relative">
@@ -1519,6 +1446,83 @@ function FrameDetail({
             <div className="p-3 bg-red-50 rounded border border-red-100">
               <p className="text-xs font-semibold text-red-700 mb-1">Error</p>
               <p className="text-xs text-red-600">{item.error}</p>
+            </div>
+          )}
+
+          {/* ── Feedback (shown when image is generated) ─────────── */}
+          {item.status === 'done' && item.exportedPng && (
+            <div className="pt-3 border-t border-gray-100">
+              {feedbackSaved ? (
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-emerald-700">
+                    {feedbackLabel === 'correct' ? '👍 Marcado como correcto' : '👎 Error registrado'}
+                  </p>
+                  <button
+                    onClick={() => { setFeedbackSaved(false); setFeedbackLabel(null) }}
+                    className="text-[11px] text-gray-400 hover:underline"
+                  >
+                    Cambiar
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-gray-700">¿El resultado es correcto?</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => { setShowErrorForm(false); submitFeedback('correct') }}
+                      disabled={submitting}
+                      className="flex-1 py-2 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 text-xs font-semibold hover:bg-emerald-100 disabled:opacity-50 transition-colors"
+                    >
+                      👍 Correcto
+                    </button>
+                    <button
+                      onClick={() => setShowErrorForm(v => !v)}
+                      disabled={submitting}
+                      className="flex-1 py-2 rounded-lg border border-red-200 bg-red-50 text-red-600 text-xs font-semibold hover:bg-red-100 disabled:opacity-50 transition-colors"
+                    >
+                      👎 Con errores
+                    </button>
+                  </div>
+                  {showErrorForm && (
+                    <div className="space-y-2">
+                      <select
+                        value={errorCategory}
+                        onChange={(e) => setErrorCategory(e.target.value)}
+                        className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-red-400 bg-white"
+                      >
+                        <option value="">— Tipo de error (opcional) —</option>
+                        <option value="background">Fondo de color visible</option>
+                        <option value="position">Posición incorrecta</option>
+                        <option value="detection">Precio no detectado</option>
+                        <option value="font">Fuente o estilo incorrecto</option>
+                        <option value="other">Otro</option>
+                      </select>
+                      <textarea
+                        value={feedbackDesc}
+                        onChange={(e) => setFeedbackDesc(e.target.value)}
+                        placeholder="Descripción del problema (opcional)..."
+                        rows={2}
+                        className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 resize-none focus:outline-none focus:border-red-400"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => submitFeedback('error')}
+                          disabled={submitting}
+                          className="flex-1 py-1.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50"
+                        >
+                          {submitting ? 'Guardando...' : 'Enviar error'}
+                        </button>
+                        <button
+                          onClick={() => setShowErrorForm(false)}
+                          className="px-3 py-1.5 rounded-lg border border-gray-200 text-gray-500 text-xs hover:bg-gray-50"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -1938,11 +1942,12 @@ frameImg.onload=function(){
   ctx.drawImage(frameImg,0,0,W,H);
   function proceed(bgEl){
     eraseRects(bgEl);
-    // Wait for webfonts before drawing text so the right typeface is used.
-    document.fonts.ready.then(function(){
-      drawText();
-      window.__ready=true;
-    });
+    // Race: give Google Fonts 4s to load; draw and signal Playwright regardless.
+    // In Railway production, fonts.googleapis.com may be slow — don't block the export.
+    var _ftDone=false;
+    function _finish(){if(_ftDone)return;_ftDone=true;drawText();window.__ready=true;}
+    var _ftTimer=setTimeout(_finish,4000);
+    document.fonts.ready.then(function(){clearTimeout(_ftTimer);_finish();});
   }
   var bgsrc=cv.getAttribute('data-bgsrc');
   if(bgsrc){

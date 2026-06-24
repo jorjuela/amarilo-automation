@@ -27,7 +27,10 @@ export async function POST(req: NextRequest) {
     try {
       const page = await browser.newPage()
       await page.setViewportSize({ width, height })
-      await page.setContent(html, { waitUntil: 'networkidle', timeout: 20000 })
+      // 'domcontentloaded' avoids waiting for external CDN resources (Google Fonts, etc.)
+      // that can block 'networkidle' for 20+ seconds in production Railway containers.
+      // The canvas __ready signal handles the actual readiness check below.
+      await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 30000 })
 
       // Wait for canvas-ready signal (Strategy B: canvas color-sampling)
       const usesCanvas = html.includes('window.__ready')
